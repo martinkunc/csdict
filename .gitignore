@@ -1,0 +1,14 @@
+## .NET build output
+bin/
+obj/
+*.user
+.vs/
+
+dicts/
+
+# Local NuGet packages ARE tracked (src/local-packages/*.nupkg) - this repo has no package
+# registry, so the prebuilt native packages are committed directly.
+src/CSGtk.App/Dictionaries/
+src/CSGtk.Gtk.Native.macOS/runtimes/osx-arm64/native/
+src/CSGtk.Gtk.Native.macOS/runtimes/osx-x64/native/
+src/CSGtk.Gtk.Native.Windows/runtimes/win-x64/native/

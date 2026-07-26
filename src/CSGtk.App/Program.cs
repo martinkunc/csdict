@@ -9,31 +9,75 @@ namespace CSGtk.App;
 
 internal static unsafe class Program
 {
-    private const string Css = """
-        window {
-            background-color: #2a292c;
-        }
-        headerbar {
-            background-color: #2a292c;
-            color: #e8e7ea;
-        }
-        label.csgtk-placeholder {
-            color: #98979b;
-            font-size: 15px;
-        }
-        label.csgtk-heading {
-            color: #cfced2;
-        }
-        label.csgtk-translation {
-            color: #f5f4f7;
-        }
-        togglebutton.csgtk-a-small label {
-            font-size: 12px;
-        }
-        togglebutton.csgtk-a-large label {
-            font-size: 17px;
-        }
-        """;
+    /// <summary>Builds the full app stylesheet for whichever palette matches the OS's current
+    /// light/dark preference (see SystemTheme.PrefersDark) - covers every widget kind the app
+    /// actually uses (window, headerbar, plain/toggle buttons, the search entry, and the word-list
+    /// GtkListBox/rows) so nothing is left showing the platform theme's default light chrome
+    /// against our own dark (or light) background.</summary>
+    private static string BuildCss(bool dark)
+    {
+        (string bg, string bgAlt, string bgAltHover, string fg, string fgDim, string fgHeading, string fgTranslation, string border) = dark
+            ? ("#2a292c", "#3a393d", "#48474c", "#e8e7ea", "#98979b", "#cfced2", "#f5f4f7", "#201f22")
+            : ("#f5f4f7", "#e7e6ea", "#dad9de", "#232227", "#6b6a6e", "#141316", "#0c0b0d", "#d3d2d6");
+
+        return $$"""
+            window {
+                background-color: {{bg}};
+                background-image: none;
+                color: {{fg}};
+            }
+            headerbar {
+                background-color: {{bg}};
+                background-image: none;
+                color: {{fg}};
+                box-shadow: none;
+            }
+            button, entry {
+                background-color: {{bgAlt}};
+                background-image: none;
+                color: {{fg}};
+                border-color: {{border}};
+                box-shadow: none;
+                text-shadow: none;
+            }
+            button:hover, entry:hover {
+                background-color: {{bgAltHover}};
+                background-image: none;
+            }
+            button.csgtk-checked {
+                background-color: #3584e4;
+                background-image: none;
+                color: #ffffff;
+            }
+            list {
+                background-color: {{bg}};
+                color: {{fg}};
+            }
+            list row {
+                background-color: {{bg}};
+                color: {{fg}};
+            }
+            list row:hover {
+                background-color: {{bgAlt}};
+            }
+            label.csgtk-placeholder {
+                color: {{fgDim}};
+                font-size: 15px;
+            }
+            label.csgtk-heading {
+                color: {{fgHeading}};
+            }
+            label.csgtk-translation {
+                color: {{fgTranslation}};
+            }
+            button.csgtk-a-small label {
+                font-size: 12px;
+            }
+            button.csgtk-a-large label {
+                font-size: 17px;
+            }
+            """;
+    }
 
     private const int MaxSimilarWords = 60;
 
@@ -121,13 +165,31 @@ internal static unsafe class Program
     private static nint BuildHeaderBar()
     {
         nint headerBar = Gtk4.gtk_header_bar_new();
-        Gtk4.gtk_header_bar_set_show_title_buttons(headerBar, true);
+        // Rather than gtk_header_bar_set_show_title_buttons (which always draws the
+        // minimize/maximize/close cluster with generic symbolic icons, the same on every OS), build
+        // our own GtkWindowControls and opt into native rendering - GTK >= 4.18 then draws genuine
+        // macOS traffic lights / Windows 11 controls where the backend supports it, on whichever
+        // side that platform's window-manager convention puts them (macOS: start: everywhere else:
+        // end), leaving the other side empty automatically.
+        Gtk4.gtk_header_bar_set_show_title_buttons(headerBar, false);
+
+        nint controlsStart = Gtk4.gtk_window_controls_new(GtkPackType.Start);
+        Gtk4.gtk_window_controls_set_use_native_controls(controlsStart, true);
+        Gtk4.gtk_header_bar_pack_start(headerBar, controlsStart);
 
         nint navBox = Gtk4.gtk_box_new(GtkOrientation.Horizontal, 0);
         Gtk4.gtk_widget_add_css_class(navBox, "linked");
-        Gtk4.gtk_box_append(navBox, Gtk4.gtk_button_new_from_icon_name("go-previous-symbolic"));
-        Gtk4.gtk_box_append(navBox, Gtk4.gtk_button_new_from_icon_name("go-next-symbolic"));
+        nint prevButton = Gtk4.gtk_button_new_from_icon_name("go-previous-symbolic");
+        GObject.Connect(prevButton, "clicked", &OnPrevWordClicked);
+        nint nextButton = Gtk4.gtk_button_new_from_icon_name("go-next-symbolic");
+        GObject.Connect(nextButton, "clicked", &OnNextWordClicked);
+        Gtk4.gtk_box_append(navBox, prevButton);
+        Gtk4.gtk_box_append(navBox, nextButton);
         Gtk4.gtk_header_bar_pack_start(headerBar, navBox);
+
+        s_dictionaryButton = Gtk4.gtk_button_new_with_label("D");
+        GObject.Connect(s_dictionaryButton, "clicked", &OnDictionaryButtonClicked);
+        Gtk4.gtk_header_bar_pack_start(headerBar, s_dictionaryButton);
 
         nint title = Gtk4.gtk_label_new(null);
         Gtk4.gtk_label_set_markup(title, "<b>Dictionary</b>");
@@ -137,24 +199,27 @@ internal static unsafe class Program
         Gtk4.gtk_widget_add_css_class(fontBox, "linked");
         nint smallA = Gtk4.gtk_toggle_button_new_with_label("A");
         Gtk4.gtk_widget_add_css_class(smallA, "csgtk-a-small");
+        GObject.Connect(smallA, "toggled", &OnCheckedToggleChanged);
         nint largeA = Gtk4.gtk_toggle_button_new_with_label("A");
         Gtk4.gtk_widget_add_css_class(largeA, "csgtk-a-large");
+        GObject.Connect(largeA, "toggled", &OnCheckedToggleChanged);
         Gtk4.gtk_toggle_button_set_group(largeA, smallA);
         Gtk4.gtk_toggle_button_set_active(largeA, true);
+        Gtk4.gtk_widget_add_css_class(largeA, "csgtk-checked");
         Gtk4.gtk_box_append(fontBox, smallA);
         Gtk4.gtk_box_append(fontBox, largeA);
-
-        s_dictionaryButton = Gtk4.gtk_button_new_with_label("D");
-        GObject.Connect(s_dictionaryButton, "clicked", &OnDictionaryButtonClicked);
 
         s_searchEntry = Gtk4.gtk_search_entry_new();
         Gtk4.gtk_widget_set_size_request(s_searchEntry, 220, -1);
         GObject.Connect(s_searchEntry, "search-changed", &OnSearchChanged);
         GObject.Connect(s_searchEntry, "activate", &OnSearchActivate);
 
+        nint controlsEnd = Gtk4.gtk_window_controls_new(GtkPackType.End);
+        Gtk4.gtk_window_controls_set_use_native_controls(controlsEnd, true);
+        Gtk4.gtk_header_bar_pack_end(headerBar, controlsEnd);
+
         nint endBox = Gtk4.gtk_box_new(GtkOrientation.Horizontal, 8);
         Gtk4.gtk_box_append(endBox, fontBox);
-        Gtk4.gtk_box_append(endBox, s_dictionaryButton);
         Gtk4.gtk_box_append(endBox, s_searchEntry);
         Gtk4.gtk_header_bar_pack_end(headerBar, endBox);
 
@@ -225,8 +290,14 @@ internal static unsafe class Program
 
             bool isAll = label == "All";
             Gtk4.gtk_toggle_button_set_active(tab, isAll);
+            if (isAll)
+            {
+                Gtk4.gtk_widget_add_css_class(tab, "csgtk-checked");
+            }
+
             s_sourceButtons[tab] = isAll ? null : label;
             GObject.Connect(tab, "toggled", &OnSourceToggled);
+            GObject.Connect(tab, "toggled", &OnCheckedToggleChanged);
             Gtk4.gtk_box_append(tabs, tab);
         }
 
@@ -262,7 +333,7 @@ internal static unsafe class Program
         Gtk4.gtk_widget_set_margin_end(s_resultsBox, 14);
         Gtk4.gtk_widget_set_margin_top(s_resultsBox, 10);
         Gtk4.gtk_widget_set_margin_bottom(s_resultsBox, 10);
-        ShowEmptyState("Type a word above to look it up.");
+        ShowEmptyState(NoSelectionMessage());
 
         nint rightScroller = Gtk4.gtk_scrolled_window_new();
         Gtk4.gtk_scrolled_window_set_policy(rightScroller, GtkPolicyType.Never, GtkPolicyType.Automatic);
@@ -285,6 +356,23 @@ internal static unsafe class Program
         if (s_rowData.TryGetValue(child, out (string Lemma, string Lang) word))
         {
             SelectWord(word.Lemma, word.Lang);
+        }
+    }
+
+    /// <summary>Keeps a "csgtk-checked" class in sync with a GtkToggleButton's active state, so our
+    /// own CSS (see BuildCss) can style the selected tab/font-size button reliably instead of
+    /// depending on the ":checked" pseudo-class, which - unlike ":hover" or ":backdrop" - did not
+    /// visibly take effect against this app's stylesheet in testing.</summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnCheckedToggleChanged(nint button, nint userData)
+    {
+        if (Gtk4.gtk_toggle_button_get_active(button))
+        {
+            Gtk4.gtk_widget_add_css_class(button, "csgtk-checked");
+        }
+        else
+        {
+            Gtk4.gtk_widget_remove_css_class(button, "csgtk-checked");
         }
     }
 
@@ -555,8 +643,41 @@ internal static unsafe class Program
         nint label = Gtk4.gtk_list_box_row_get_child(firstChild);
         if (s_rowData.TryGetValue(label, out (string Lemma, string Lang) word))
         {
+            Gtk4.gtk_list_box_select_row(s_wordList, firstChild);
             SelectWord(word.Lemma, word.Lang);
         }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnPrevWordClicked(nint button, nint userData) => StepSelectedWord(-1);
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNextWordClicked(nint button, nint userData) => StepSelectedWord(1);
+
+    /// <summary>Moves the highlighted row in the similar-words list to its previous/next sibling
+    /// (falling back to the first row if nothing is selected yet) and shows that word's
+    /// translations - the header bar's back/forward buttons walk the list the same way arrow keys
+    /// or a click would.</summary>
+    private static void StepSelectedWord(int direction)
+    {
+        nint current = Gtk4.gtk_list_box_get_selected_row(s_wordList);
+        nint target = current == 0
+            ? Gtk4.gtk_widget_get_first_child(s_wordList)
+            : direction < 0 ? Gtk4.gtk_widget_get_prev_sibling(current) : Gtk4.gtk_widget_get_next_sibling(current);
+
+        if (target == 0)
+        {
+            return;
+        }
+
+        nint label = Gtk4.gtk_list_box_row_get_child(target);
+        if (!s_rowData.TryGetValue(label, out (string Lemma, string Lang) word))
+        {
+            return;
+        }
+
+        Gtk4.gtk_list_box_select_row(s_wordList, target);
+        SelectWord(word.Lemma, word.Lang);
     }
 
     private static void AppendWordRow(string lemma, string lang)
@@ -595,7 +716,7 @@ internal static unsafe class Program
 
         if (s_selected is not { } selected)
         {
-            ShowEmptyState("Type a word above to look it up.");
+            ShowEmptyState(NoSelectionMessage());
             return;
         }
 
@@ -603,6 +724,7 @@ internal static unsafe class Program
         Gtk4.gtk_label_set_markup(heading,
             $"<span size='large' weight='bold'>{Escape(selected.Lemma)}</span>  <span alpha='60%'>({selected.Lang})</span>");
         Gtk4.gtk_label_set_xalign(heading, 0);
+        Gtk4.gtk_widget_add_css_class(heading, "csgtk-heading");
         Gtk4.gtk_box_append(s_resultsBox, heading);
 
         List<SourceResult> results = LookupService.GetTranslations(s_catalog!, selected.Lemma, selected.Lang, s_activeSourceFilter);
@@ -624,6 +746,7 @@ internal static unsafe class Program
         Gtk4.gtk_label_set_markup(sourceHeading, $"<b>{Escape(source.Source)}</b>");
         Gtk4.gtk_label_set_xalign(sourceHeading, 0);
         Gtk4.gtk_widget_set_margin_top(sourceHeading, 6);
+        Gtk4.gtk_widget_add_css_class(sourceHeading, "csgtk-heading");
         Gtk4.gtk_box_append(s_resultsBox, sourceHeading);
 
         foreach (EntryResult entry in source.Entries)
@@ -674,6 +797,14 @@ internal static unsafe class Program
         }
     }
 
+    /// <summary>What to show in the results pane when no word is selected - guides a first-run
+    /// user toward the "D" (Dictionaries) button instead of the generic search hint if there's
+    /// nothing to search yet.</summary>
+    private static string NoSelectionMessage() =>
+        s_catalog!.Sources.Count == 0
+            ? "Open Dictionaries to download a dictionary first."
+            : "Type a word above to look it up.";
+
     private static void ShowEmptyState(string text)
     {
         nint label = Gtk4.gtk_label_new(text);
@@ -702,7 +833,7 @@ internal static unsafe class Program
     private static void ApplyStyles()
     {
         nint provider = Gtk4.gtk_css_provider_new();
-        Gtk4.gtk_css_provider_load_from_string(provider, Css);
+        Gtk4.gtk_css_provider_load_from_string(provider, BuildCss(SystemTheme.PrefersDark()));
         Gtk4.gtk_style_context_add_provider_for_display(Gtk4.gdk_display_get_default(), provider, Gtk4.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
 }

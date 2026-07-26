@@ -60,6 +60,17 @@ public static partial class Gtk4
     [LibraryImport(LibName)]
     public static partial void gtk_header_bar_set_title_widget(nint bar, nint titleWidget);
 
+    // Window controls (the minimize/maximize/close cluster) - gtk_header_bar_set_show_title_buttons
+    // draws these with generic symbolic icons on every platform; building our own GtkWindowControls
+    // and opting into use-native-controls (GTK >= 4.18) instead renders genuine platform chrome
+    // (macOS traffic lights, Windows 11 controls) where the backend supports it.
+
+    [LibraryImport(LibName)]
+    public static partial nint gtk_window_controls_new(GtkPackType side);
+
+    [LibraryImport(LibName)]
+    public static partial void gtk_window_controls_set_use_native_controls(nint controls, [MarshalAs(UnmanagedType.Bool)] bool setting);
+
     // Box layout
 
     [LibraryImport(LibName)]
@@ -185,6 +196,16 @@ public static partial class Gtk4
     [LibraryImport(LibName)]
     public static partial nint gtk_list_box_row_get_child(nint row);
 
+    /// <summary>Programmatically selects (and visually highlights) a GtkListBoxRow*, the same
+    /// highlight a user click already produces.</summary>
+    [LibraryImport(LibName)]
+    public static partial void gtk_list_box_select_row(nint listBox, nint row);
+
+    /// <summary>Returns the currently selected GtkListBoxRow*, or 0 if none (Browse selection mode
+    /// only ever has zero or one).</summary>
+    [LibraryImport(LibName)]
+    public static partial nint gtk_list_box_get_selected_row(nint listBox);
+
     // Generic widget properties
 
     [LibraryImport(LibName)]
@@ -221,8 +242,17 @@ public static partial class Gtk4
     [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
     public static partial void gtk_widget_add_css_class(nint widget, string cssClass);
 
+    [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial void gtk_widget_remove_css_class(nint widget, string cssClass);
+
     [LibraryImport(LibName)]
     public static partial nint gtk_widget_get_first_child(nint widget);
+
+    [LibraryImport(LibName)]
+    public static partial nint gtk_widget_get_next_sibling(nint widget);
+
+    [LibraryImport(LibName)]
+    public static partial nint gtk_widget_get_prev_sibling(nint widget);
 
     [LibraryImport(LibName)]
     public static partial void gtk_widget_set_visible(nint widget, [MarshalAs(UnmanagedType.Bool)] bool visible);

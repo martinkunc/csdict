@@ -30,3 +30,9 @@ public enum GtkSelectionMode
     Browse = 2,
     Multiple = 3,
 }
+
+public enum GtkPackType
+{
+    Start = 0,
+    End = 1,
+}

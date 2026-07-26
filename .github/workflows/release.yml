@@ -1,0 +1,164 @@
+name: Release
+
+# Push a version tag (e.g. "v1.2.0") to build all three platforms and publish a GitHub Release
+# with one download per platform attached.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish self-contained win-x64
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          dotnet publish src/CSGtk.App/CSGtk.App.csproj -c Release -r win-x64 --self-contained true `
+            -p:Version=$version -o publish/win-x64
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          Compress-Archive -Path publish/win-x64/* -DestinationPath "Dictionary-$version-win-x64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dictionary-win-x64
+          path: Dictionary-*-win-x64.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish self-contained linux-x64
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dotnet publish src/CSGtk.App/CSGtk.App.csproj -c Release -r linux-x64 --self-contained true \
+            -p:Version="$version" -o publish/linux-x64
+
+      - name: Zip
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          (cd publish/linux-x64 && zip -r "$GITHUB_WORKSPACE/Dictionary-$version-linux-x64.zip" .)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dictionary-linux-x64
+          path: Dictionary-*-linux-x64.zip
+
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - rid: osx-arm64
+            arch_label: macos-arm64
+          - rid: osx-x64
+            arch_label: macos-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish self-contained ${{ matrix.rid }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dotnet publish src/CSGtk.App/CSGtk.App.csproj -c Release -r ${{ matrix.rid }} --self-contained true \
+            -p:Version="$version" -o publish/${{ matrix.rid }}
+
+      # A plain `dotnet publish` output is just a folder of files - macOS only treats a directory
+      # as a double-clickable, Applications-droppable app if it's a *.app bundle with this exact
+      # Contents/{MacOS,Info.plist} layout. Ad-hoc codesigning (no Apple Developer certificate
+      # involved) is enough to get past the *worst* Gatekeeper "app is damaged" failure mode, but
+      # since it's not notarized, first launch will still need right-click -> Open.
+      - name: Assemble Dictionary.app
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          app="Dictionary.app"
+          rm -rf "$app"
+          mkdir -p "$app/Contents/MacOS"
+          cp -R publish/${{ matrix.rid }}/. "$app/Contents/MacOS/"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>Dictionary</string>
+            <key>CFBundleDisplayName</key>
+            <string>Dictionary</string>
+            <key>CFBundleIdentifier</key>
+            <string>dev.csgtk.Dictionary</string>
+            <key>CFBundleVersion</key>
+            <string>$version</string>
+            <key>CFBundleShortVersionString</key>
+            <string>$version</string>
+            <key>CFBundleExecutable</key>
+            <string>CSGtk.App</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>12.0</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+          codesign --force --deep -s - "$app"
+
+      - name: Build DMG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          rm -rf dmg-root
+          mkdir dmg-root
+          cp -R Dictionary.app dmg-root/
+          ln -s /Applications dmg-root/Applications
+          hdiutil create -volname "Dictionary" -srcfolder dmg-root -ov -format UDZO \
+            "Dictionary-$version-${{ matrix.arch_label }}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dictionary-${{ matrix.arch_label }}
+          path: Dictionary-*.dmg
+
+  create-release:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" artifacts/*/* \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --notes "$(cat <<'EOF'
+          Automated release build.
+
+          - **Windows (x64)** - unzip and run `CSGtk.App.exe`.
+          - **Linux (x64)** - unzip and run `CSGtk.App`. Requires GTK 4 to already be installed via your package manager (e.g. `apt install libgtk-4-1`, `dnf install gtk4`, `pacman -S gtk4`).
+          - **macOS (Apple Silicon / Intel)** - open the `.dmg` matching your Mac and drag `Dictionary.app` into Applications. The app is ad-hoc signed but not notarized by Apple, so the first launch may need right-click -> Open (or `xattr -cr /Applications/Dictionary.app`) to get past Gatekeeper.
+          EOF
+          )"

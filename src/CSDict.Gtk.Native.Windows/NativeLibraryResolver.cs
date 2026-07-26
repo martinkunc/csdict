@@ -71,7 +71,11 @@ public static class NativeLibraryResolver
             candidates.Add(explicitDir);
         }
 
+        // Framework-dependent builds keep the package's native assets under this RID-specific
+        // subdirectory. `dotnet publish --self-contained` (what the release workflow uses) instead
+        // flattens them directly into the app's own output directory, so that must be checked too.
         candidates.Add(Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native"));
+        candidates.Add(AppContext.BaseDirectory);
         candidates.AddRange(WellKnownDirectories);
 
         string? pathVar = Environment.GetEnvironmentVariable("PATH");

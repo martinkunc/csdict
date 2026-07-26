@@ -16,6 +16,8 @@ internal static class WikDictScraper
     {
         [("cs", "en")] = "cs-en",
         [("en", "cs")] = "en-cs",
+        [("zh", "en")] = "zh-en",
+        [("en", "zh")] = "en-zh",
     };
 
     private static readonly Regex LicenseUrlRegex = new(

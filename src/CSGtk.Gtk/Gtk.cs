@@ -203,6 +203,10 @@ public static partial class Gtk4
     public static partial void gtk_widget_set_size_request(nint widget, int width, int height);
 
     [LibraryImport(LibName)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool gtk_widget_grab_focus(nint widget);
+
+    [LibraryImport(LibName)]
     public static partial void gtk_widget_set_margin_start(nint widget, int margin);
 
     [LibraryImport(LibName)]

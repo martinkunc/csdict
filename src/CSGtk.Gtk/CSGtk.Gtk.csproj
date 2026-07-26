@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <PackageId>CSGtk.Gtk</PackageId>
     <Description>P/Invoke bindings for GTK 4 (GtkApplication, windows, header bar, boxes, buttons, labels, search entry). Platform-agnostic; pair with a matching CSGtk.Gtk.Native.* package that locates the native GTK 4 libraries for your platform.</Description>
   </PropertyGroup>

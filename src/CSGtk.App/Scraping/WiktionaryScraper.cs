@@ -5,49 +5,72 @@ using CSGtk.App.Sqlite;
 
 namespace CSGtk.App.Scraping;
 
-/// <summary>C# port of dicts/scrapers/wiktionary_kaikki.py: uses two kaikki.org files - the small
-/// pre-filtered Czech-only extract for cs-&gt;en (glosses already in English), and a streamed pass
-/// over the full raw Wiktextract dump for en-&gt;cs (filtering on translations[].lang_code=="cs").
-/// The two directions are scraped independently here (unlike the Python script's combined `run`),
-/// since the app's Download button downloads one direction at a time and the en-&gt;cs direction
-/// alone requires ~2.8GB.</summary>
+/// <summary>C# port of dicts/scrapers/wiktionary_kaikki.py: uses two kinds of kaikki.org files - a
+/// small pre-filtered per-language extract (that language's headwords, with English glosses, since
+/// it's derived from the English Wiktionary's entries *about* that language) for X-&gt;en, and a
+/// streamed pass over the full raw Wiktextract dump for en-&gt;X (filtering on
+/// translations[].lang_code==X). Both directions are generalized over `lemmaLang`/`targetLang`
+/// rather than hardcoded to Czech, so any language kaikki.org has an extract for can be added just
+/// by extending KaikkiLanguageNames below - the app's Download button still downloads one direction
+/// at a time, since the en-&gt;X direction alone requires ~2.8GB regardless of X.</summary>
 internal static class WiktionaryScraper
 {
     private const string Source = "wiktionary";
     private const string License = "CC BY-SA 4.0 / GFDL (Wiktionary); attribution to Wiktionary contributors and Wiktextract required";
-    private const string Authors = "Wiktionary contributors (English Wiktionary & Czech Wiktionary); "
+    private const string Authors = "Wiktionary contributors (English Wiktionary and contributors in the source language's own Wiktionary); "
         + "extraction by Tatu Ylonen / Wiktextract (kaikki.org). Cite: Ylonen, "
         + "\"Wiktextract: Wiktionary as Machine-Readable Structured Data\", LREC 2022.";
 
-    private const string CsUrl = "https://kaikki.org/dictionary/Czech/kaikki.org-dictionary-Czech.jsonl.gz";
-    private const string CsSourceUrl = "https://kaikki.org/dictionary/Czech/";
     private const string EnRawUrl = "https://kaikki.org/dictionary/raw-wiktextract-data.jsonl.gz";
     private const string EnRawSourceUrl = "https://kaikki.org/dictionary/rawdata.html";
 
+    /// <summary>kaikki.org's per-language extract folder name for each lemma language this app
+    /// knows how to scrape X-&gt;en from - e.g. "cs" -&gt; kaikki.org/dictionary/Czech/.</summary>
+    private static readonly Dictionary<string, string> KaikkiLanguageNames = new()
+    {
+        ["cs"] = "Czech",
+        ["hi"] = "Hindi",
+        ["ko"] = "Korean",
+    };
+
+    /// <summary>Occasional legacy ISO 639-3 lang_code seen in the raw dump alongside the usual
+    /// 639-1 code, per language, where known.</summary>
+    private static readonly Dictionary<string, string> AltLangCodes = new()
+    {
+        ["cs"] = "ces",
+    };
+
     private static readonly HashSet<string> GenderTags = ["masculine", "feminine", "neuter"];
 
-    public static async Task ScrapeCsToEnAsync(string cacheDir, string outputPath, IProgress<string>? progress, CancellationToken ct)
+    /// <summary>X-&gt;en, where X is `lemmaLang` (must be a key of KaikkiLanguageNames): headword in
+    /// X, glosses already in English because the extract is the English Wiktionary's own entries
+    /// for X-language words.</summary>
+    public static async Task ScrapeToEnAsync(string lemmaLang, string cacheDir, string outputPath, IProgress<string>? progress, CancellationToken ct)
     {
+        string languageName = KaikkiLanguageNames[lemmaLang];
+        string url = $"https://kaikki.org/dictionary/{languageName}/kaikki.org-dictionary-{languageName}.jsonl.gz";
+        string sourceUrl = $"https://kaikki.org/dictionary/{languageName}/";
+
         Directory.CreateDirectory(cacheDir);
-        string csInput = Path.Combine(cacheDir, "kaikki-cs.jsonl.gz");
+        string input = Path.Combine(cacheDir, $"kaikki-{lemmaLang}.jsonl.gz");
 
-        progress?.Report("Checking Czech Wiktionary extract date...");
-        string year = await Downloader.FetchLastModifiedYearAsync(CsUrl, ct);
+        progress?.Report($"Checking {languageName} Wiktionary extract date...");
+        string year = await Downloader.FetchLastModifiedYearAsync(url, ct);
 
-        if (!File.Exists(csInput))
+        if (!File.Exists(input))
         {
-            progress?.Report("Downloading Czech Wiktionary extract (~19MB)...");
-            await Downloader.DownloadAsync(CsUrl, csInput, progress, ct);
+            progress?.Report($"Downloading {languageName} Wiktionary extract...");
+            await Downloader.DownloadAsync(url, input, progress, ct);
         }
 
         using SqliteWriter writer = SqliteWriter.Create(outputPath);
         int count = 0;
-        foreach (JsonDocument doc in IterateJsonl(csInput))
+        foreach (JsonDocument doc in IterateJsonl(input))
         {
             using (doc)
             {
                 ct.ThrowIfCancellationRequested();
-                ScrapedEntry? entry = CsEntryToScrapedEntry(doc.RootElement, year);
+                ScrapedEntry? entry = ToEnglishEntryToScrapedEntry(doc.RootElement, year, lemmaLang, sourceUrl);
                 if (entry is null)
                 {
                     continue;
@@ -62,10 +85,13 @@ internal static class WiktionaryScraper
             }
         }
 
-        progress?.Report($"Wrote {count} cs->en entries.");
+        progress?.Report($"Wrote {count} {lemmaLang}->en entries.");
     }
 
-    public static async Task ScrapeEnToCsAsync(string cacheDir, string outputPath, IProgress<string>? progress, CancellationToken ct)
+    /// <summary>en-&gt;X, where X is `targetLang`: streams the full raw Wiktextract dump (every
+    /// English headword, with translations into every language Wiktionary covers) and keeps only
+    /// entries with at least one translation whose language code matches `targetLang`.</summary>
+    public static async Task ScrapeFromEnAsync(string targetLang, string cacheDir, string outputPath, IProgress<string>? progress, CancellationToken ct)
     {
         Directory.CreateDirectory(cacheDir);
         string enInput = Path.Combine(cacheDir, "kaikki-raw-en.jsonl.gz");
@@ -88,7 +114,7 @@ internal static class WiktionaryScraper
             {
                 ct.ThrowIfCancellationRequested();
                 scanned++;
-                ScrapedEntry? entry = EnEntryToScrapedEntry(doc.RootElement, year);
+                ScrapedEntry? entry = EnEntryToScrapedEntry(doc.RootElement, year, targetLang);
                 if (entry is not null)
                 {
                     writer.WriteEntry(entry);
@@ -97,12 +123,12 @@ internal static class WiktionaryScraper
 
                 if (scanned % 500_000 == 0)
                 {
-                    progress?.Report($"...scanned {scanned:N0} lines, {count:N0} en->cs entries so far");
+                    progress?.Report($"...scanned {scanned:N0} lines, {count:N0} en->{targetLang} entries so far");
                 }
             }
         }
 
-        progress?.Report($"Wrote {count} en->cs entries.");
+        progress?.Report($"Wrote {count} en->{targetLang} entries.");
     }
 
     private static IEnumerable<JsonDocument> IterateJsonl(string path)
@@ -136,8 +162,8 @@ internal static class WiktionaryScraper
         }
     }
 
-    /// <summary>Czech headword, English glosses -> cs -> en entry.</summary>
-    private static ScrapedEntry? CsEntryToScrapedEntry(JsonElement obj, string year)
+    /// <summary>X headword, English glosses -> X -> en entry.</summary>
+    private static ScrapedEntry? ToEnglishEntryToScrapedEntry(JsonElement obj, string year, string lemmaLang, string sourceUrl)
     {
         string? lemma = GetString(obj, "word");
         if (string.IsNullOrEmpty(lemma))
@@ -187,15 +213,15 @@ internal static class WiktionaryScraper
         string? pos = GetString(obj, "pos");
         return new ScrapedEntry
         {
-            Id = ScrapedEntryId.Make(Source, lemma, "cs", "en", pos ?? ""),
+            Id = ScrapedEntryId.Make(Source, lemma, lemmaLang, "en", pos ?? ""),
             Source = Source,
             SourceLicense = License,
-            SourceUrl = CsSourceUrl,
+            SourceUrl = sourceUrl,
             SourceAuthors = Authors,
             SourceYear = year,
             RetrievedAt = ScrapedEntryId.Today(),
             Lemma = lemma,
-            LemmaLang = "cs",
+            LemmaLang = lemmaLang,
             TargetLang = "en",
             Pos = pos,
             Ipa = FirstIpa(obj),
@@ -204,8 +230,8 @@ internal static class WiktionaryScraper
         };
     }
 
-    /// <summary>English headword with &gt;=1 Czech translation -> en -> cs entry.</summary>
-    private static ScrapedEntry? EnEntryToScrapedEntry(JsonElement obj, string year)
+    /// <summary>English headword with &gt;=1 translation into `targetLang` -> en -> X entry.</summary>
+    private static ScrapedEntry? EnEntryToScrapedEntry(JsonElement obj, string year, string targetLang)
     {
         if (GetString(obj, "lang_code") != "en")
         {
@@ -218,17 +244,20 @@ internal static class WiktionaryScraper
             return null;
         }
 
-        List<JsonElement> csTranslations = GetArray(obj, "translations")
-            .Where(t => GetString(t, "lang_code") is "cs" or "ces" || GetString(t, "lang") == "Czech")
+        string? targetLanguageName = KaikkiLanguageNames.GetValueOrDefault(targetLang);
+        string? altCode = AltLangCodes.GetValueOrDefault(targetLang);
+        List<JsonElement> targetTranslations = GetArray(obj, "translations")
+            .Where(t => GetString(t, "lang_code") is { } code && (code == targetLang || code == altCode)
+                || (targetLanguageName is not null && GetString(t, "lang") == targetLanguageName))
             .ToList();
-        if (csTranslations.Count == 0)
+        if (targetTranslations.Count == 0)
         {
             return null;
         }
 
         var groups = new Dictionary<string, List<JsonElement>>();
         var groupOrder = new List<string>();
-        foreach (JsonElement t in csTranslations)
+        foreach (JsonElement t in targetTranslations)
         {
             string key = GetString(t, "sense") ?? "";
             if (!groups.TryGetValue(key, out List<JsonElement>? list))
@@ -276,7 +305,7 @@ internal static class WiktionaryScraper
         string? pos = GetString(obj, "pos");
         return new ScrapedEntry
         {
-            Id = ScrapedEntryId.Make(Source, lemma, "en", "cs", pos ?? ""),
+            Id = ScrapedEntryId.Make(Source, lemma, "en", targetLang, pos ?? ""),
             Source = Source,
             SourceLicense = License,
             SourceUrl = EnRawSourceUrl,
@@ -285,7 +314,7 @@ internal static class WiktionaryScraper
             RetrievedAt = ScrapedEntryId.Today(),
             Lemma = lemma,
             LemmaLang = "en",
-            TargetLang = "cs",
+            TargetLang = targetLang,
             Pos = pos,
             Ipa = FirstIpa(obj),
             Senses = senses,

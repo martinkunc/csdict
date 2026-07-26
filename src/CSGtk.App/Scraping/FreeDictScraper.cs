@@ -20,6 +20,20 @@ internal static class FreeDictScraper
     {
         ["eng-ces"] = "https://download.freedict.org/dictionaries/eng-ces/0.1.3/freedict-eng-ces-0.1.3.src.tar.xz",
         ["ces-eng"] = "https://download.freedict.org/dictionaries/ces-eng/0.2.3/freedict-ces-eng-0.2.3.src.tar.xz",
+        ["eng-spa"] = "https://download.freedict.org/dictionaries/eng-spa/2025.11.23/freedict-eng-spa-2025.11.23.src.tar.xz",
+        ["spa-eng"] = "https://download.freedict.org/dictionaries/spa-eng/0.3.1/freedict-spa-eng-0.3.1.src.tar.xz",
+        ["eng-fra"] = "https://download.freedict.org/dictionaries/eng-fra/0.1.6/freedict-eng-fra-0.1.6.src.tar.xz",
+        ["fra-eng"] = "https://download.freedict.org/dictionaries/fra-eng/0.4.1/freedict-fra-eng-0.4.1.src.tar.xz",
+        ["eng-deu"] = "https://download.freedict.org/dictionaries/eng-deu/1.9-fd1/freedict-eng-deu-1.9-fd1.src.tar.xz",
+        ["deu-eng"] = "https://download.freedict.org/dictionaries/deu-eng/1.9-fd1/freedict-deu-eng-1.9-fd1.src.tar.xz",
+        ["eng-rus"] = "https://download.freedict.org/dictionaries/eng-rus/2025.11.23/freedict-eng-rus-2025.11.23.src.tar.xz",
+        ["rus-eng"] = "https://download.freedict.org/dictionaries/rus-eng/2025.11.23/freedict-rus-eng-2025.11.23.src.tar.xz",
+        ["eng-por"] = "https://download.freedict.org/dictionaries/eng-por/0.3/freedict-eng-por-0.3.src.tar.xz",
+        ["por-eng"] = "https://download.freedict.org/dictionaries/por-eng/0.2/freedict-por-eng-0.2.src.tar.xz",
+        ["eng-jpn"] = "https://download.freedict.org/dictionaries/eng-jpn/2025.11.23/freedict-eng-jpn-2025.11.23.src.tar.xz",
+        ["jpn-eng"] = "https://download.freedict.org/dictionaries/jpn-eng/0.1/freedict-jpn-eng-0.1.src.tar.xz",
+        ["eng-ara"] = "https://download.freedict.org/dictionaries/eng-ara/0.6.3/freedict-eng-ara-0.6.3.src.tar.xz",
+        ["ara-eng"] = "https://download.freedict.org/dictionaries/ara-eng/0.6.3/freedict-ara-eng-0.6.3.src.tar.xz",
     };
 
     /// <summary>FreeDict dictionary name ("eng-ces" / "ces-eng") for each (lemmaLang, targetLang)
@@ -28,6 +42,20 @@ internal static class FreeDictScraper
     {
         [("en", "cs")] = "eng-ces",
         [("cs", "en")] = "ces-eng",
+        [("en", "es")] = "eng-spa",
+        [("es", "en")] = "spa-eng",
+        [("en", "fr")] = "eng-fra",
+        [("fr", "en")] = "fra-eng",
+        [("en", "de")] = "eng-deu",
+        [("de", "en")] = "deu-eng",
+        [("en", "ru")] = "eng-rus",
+        [("ru", "en")] = "rus-eng",
+        [("en", "pt")] = "eng-por",
+        [("pt", "en")] = "por-eng",
+        [("en", "ja")] = "eng-jpn",
+        [("ja", "en")] = "jpn-eng",
+        [("en", "ar")] = "eng-ara",
+        [("ar", "en")] = "ara-eng",
     };
 
     private static readonly XNamespace Tei = "http://www.tei-c.org/ns/1.0";

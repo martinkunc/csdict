@@ -10,6 +10,7 @@ internal sealed class DictionaryCatalog : IDisposable
     private readonly List<(DictionarySource Meta, SqliteDatabase Db)> _entries = [];
 
     public IReadOnlyList<string> Sources { get; private set; } = [];
+    public IReadOnlyList<string> LemmaLangs { get; private set; } = [];
 
     public static DictionaryCatalog Load(string directory)
     {
@@ -42,6 +43,7 @@ internal sealed class DictionaryCatalog : IDisposable
         }
 
         catalog.Sources = catalog._entries.Select(e => e.Meta.Source).Distinct().OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList();
+        catalog.LemmaLangs = catalog._entries.Select(e => e.Meta.LemmaLang).Distinct().OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList();
         return catalog;
     }
 

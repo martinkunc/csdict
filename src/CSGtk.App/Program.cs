@@ -115,6 +115,7 @@ internal static unsafe class Program
         Gtk4.gtk_window_set_titlebar(window, BuildHeaderBar());
         Gtk4.gtk_window_set_child(window, BuildContent());
         Gtk4.gtk_window_present(window);
+        Gtk4.gtk_widget_grab_focus(s_searchEntry);
     }
 
     private static nint BuildHeaderBar()
@@ -334,6 +335,12 @@ internal static unsafe class Program
             AppendDictionaryDialogRow(def);
         }
 
+        // GTK auto-selects the first row for a Browse-mode list box as soon as it has children,
+        // but that doesn't raise "row-activated" - so the action-button state has to be primed
+        // manually to match, or Download/Remove stay hidden until the user clicks the (already
+        // visibly selected) first row themselves.
+        s_dialogSelected = DictionaryDownloader.All.Count > 0 ? DictionaryDownloader.All[0] : null;
+
         nint scroller = Gtk4.gtk_scrolled_window_new();
         Gtk4.gtk_scrolled_window_set_policy(scroller, GtkPolicyType.Never, GtkPolicyType.Automatic);
         Gtk4.gtk_scrolled_window_set_child(scroller, s_dialogList);
@@ -359,6 +366,7 @@ internal static unsafe class Program
         Gtk4.gtk_box_append(container, actionBox);
 
         Gtk4.gtk_window_set_child(dialog, container);
+        UpdateDialogActionState();
         Gtk4.gtk_window_present(dialog);
     }
 
@@ -516,14 +524,12 @@ internal static unsafe class Program
         }
 
         var matches = new List<(string Lemma, string Lang)>();
-        foreach (string word in s_wordIndex!.Cs.WordsWithPrefix(text, MaxSimilarWords))
+        foreach (string lang in s_wordIndex!.Languages)
         {
-            matches.Add((word, "cs"));
-        }
-
-        foreach (string word in s_wordIndex!.En.WordsWithPrefix(text, MaxSimilarWords))
-        {
-            matches.Add((word, "en"));
+            foreach (string word in s_wordIndex.ForLang(lang)!.WordsWithPrefix(text, MaxSimilarWords))
+            {
+                matches.Add((word, lang));
+            }
         }
 
         matches.Sort((a, b) => string.Compare(a.Lemma, b.Lemma, StringComparison.InvariantCultureIgnoreCase));

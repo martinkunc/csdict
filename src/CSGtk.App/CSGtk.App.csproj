@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CSGtk.Gtk" Version="1.0.2" />
+    <PackageReference Include="CSGtk.Gtk" Version="1.0.3" />
     <PackageReference Include="CSGtk.Gtk.Native.Linux" Version="2.1.0" />
     <PackageReference Include="CSGtk.Gtk.Native.macOS" Version="2.0.0" />
     <PackageReference Include="CSGtk.Gtk.Native.Windows" Version="2.0.0" />

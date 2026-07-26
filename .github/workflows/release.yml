@@ -1,11 +1,12 @@
 name: Release
 
-# Push a version tag (e.g. "v1.2.0") to build all three platforms and publish a GitHub Release
-# with one download per platform attached.
+# Push a version tag (e.g. "v1.2.0" or plain "1.2.0") to build all three platforms and publish a
+# GitHub Release with one download per platform attached.
 on:
   push:
     tags:
       - "v*.*.*"
+      - "*.*.*"
 
 jobs:
   build-windows:

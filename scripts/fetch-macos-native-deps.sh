@@ -128,6 +128,16 @@ for name, tags in d.items():
     find "$EXTRACT_DIR" -path "*/lib/*.dylib" -not -type l -exec cp {} "$STAGE_DIR/" \;
     echo "    $(ls "$STAGE_DIR" | wc -l | tr -d ' ') dylibs collected."
 
+    # Some libraries are linked against by their SONAME symlink rather than the fully-versioned
+    # real filename (e.g. other bottles reference "libxcb.1.dylib", but the real file we copied
+    # above is "libxcb.1.1.0.dylib"). Record every such alias -> real-file mapping so the install
+    # name rewriting step below can resolve those references to the file we actually bundled.
+    ALIAS_FILE="$FLAVOR_DIR/aliases.tsv"
+    : > "$ALIAS_FILE"
+    find "$EXTRACT_DIR" -path "*/lib/*.dylib" -type l | while read -r link; do
+        printf '%s\t%s\n' "$(basename "$link")" "$(basename "$(readlink "$link")")" >> "$ALIAS_FILE"
+    done
+
     ROOT_DYLIB=$(find "$STAGE_DIR" -maxdepth 1 -name "$ROOT_DYLIB_GLOB" | head -1)
     if [ -z "$ROOT_DYLIB" ]; then
         echo "error: no file matching $ROOT_DYLIB_GLOB found after extraction" >&2
@@ -135,6 +145,36 @@ for name, tags in d.items():
     fi
     ROOT_DYLIB=$(basename "$ROOT_DYLIB")
     echo "    root dylib: $ROOT_DYLIB"
+
+    # .NET's DllImport resolution on macOS only ever tries "lib<name>.dylib" - never a
+    # fully-versioned real filename like "libgtk-4.1.dylib". For the handful of libraries the
+    # C# bindings P/Invoke directly (as opposed to pulling in transitively through another
+    # bundled dylib's own @rpath dependency), rename the real file to that exact form rather
+    # than bundling a second copy under the alias name: if both the fully-versioned file and an
+    # alias copy were present, dyld would load them as two distinct images, and for these
+    # GObject-based libraries that causes duplicate GType/ObjC-class registration and a crash at
+    # startup (confirmed: "cannot register existing type 'GApplication'" when both
+    # libgio-2.0.0.dylib and a duplicated libgio-2.0.dylib were bundled and loaded).
+    echo "==> Renaming direct-P/Invoke entry-point libraries to their canonical lib<name>.dylib form..."
+    for lib in gtk-4 glib-2.0 gobject-2.0 gio-2.0; do
+        desired="lib${lib}.dylib"
+        [ -e "$STAGE_DIR/$desired" ] && continue
+        resolved="$desired"
+        for _ in 1 2 3; do
+            [ -f "$STAGE_DIR/$resolved" ] && break
+            next=$(awk -F'\t' -v n="$resolved" '$1==n{print $2; exit}' "$ALIAS_FILE")
+            [ -n "$next" ] || break
+            resolved="$next"
+        done
+        if [ -f "$STAGE_DIR/$resolved" ] && [ "$resolved" != "$desired" ]; then
+            mv "$STAGE_DIR/$resolved" "$STAGE_DIR/$desired"
+            # Record the rename as an alias too, so the dependency-rewriting step below (which
+            # resolves each dependent's LC_LOAD_DYLIB entry through this same table) redirects
+            # any other bundled dylib that referenced the old name to the renamed file instead.
+            printf '%s\t%s\n' "$resolved" "$desired" >> "$ALIAS_FILE"
+            [ "$ROOT_DYLIB" = "$resolved" ] && ROOT_DYLIB="$desired"
+        fi
+    done
 
     echo "==> Rewriting install names to be self-contained (@rpath), re-signing..."
     for f in "$STAGE_DIR"/*.dylib; do
@@ -146,8 +186,18 @@ for name, tags in d.items():
         # substituted absolute path) - this is what makes the bundle location-independent.
         otool -L "$f" | tail -n +2 | awk '{print $1}' | while read -r dep; do
             depname=$(basename "$dep")
-            if [ -f "$STAGE_DIR/$depname" ] && [ "$depname" != "$name" ]; then
-                install_name_tool -change "$dep" "@rpath/$depname" "$f" 2>/dev/null || true
+            # Resolve through the SONAME alias chain (at most a couple of hops, e.g.
+            # "libfoo.dylib" -> "libfoo.1.dylib" -> "libfoo.1.2.3.dylib") until we land on the
+            # real staged file, in case $depname itself isn't one of the files we bundled.
+            resolved="$depname"
+            for _ in 1 2 3; do
+                [ -f "$STAGE_DIR/$resolved" ] && break
+                next=$(awk -F'\t' -v n="$resolved" '$1==n{print $2; exit}' "$ALIAS_FILE")
+                [ -n "$next" ] || break
+                resolved="$next"
+            done
+            if [ -f "$STAGE_DIR/$resolved" ] && [ "$resolved" != "$name" ]; then
+                install_name_tool -change "$dep" "@rpath/$resolved" "$f" 2>/dev/null || true
             fi
         done
         install_name_tool -add_rpath "@loader_path/." "$f" 2>/dev/null || true

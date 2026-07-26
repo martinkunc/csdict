@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
 Fetches GTK 4 and its full runtime dependency closure for Windows x64 from MSYS2's UCRT64
-repository, bundles it into src/CSGtk.Gtk.Native.Windows/runtimes/win-x64/native/, and packs
+repository, bundles it into src/CSDict.Gtk.Native.Windows/runtimes/win-x64/native/, and packs
 the NuGet package into src/local-packages/.
 
 .DESCRIPTION
@@ -28,9 +28,9 @@ $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$ProjectDir = Join-Path $RepoRoot "src\CSGtk.Gtk.Native.Windows"
+$ProjectDir = Join-Path $RepoRoot "src\CSDict.Gtk.Native.Windows"
 $BundleDir = Join-Path $ProjectDir "runtimes\win-x64\native"
-$WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ("csgtk-win-deps-" + [guid]::NewGuid())
+$WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ("csdict-win-deps-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $WorkDir | Out-Null
 
 $Msys2RepoUrl = "https://repo.msys2.org/mingw/ucrt64"
@@ -144,7 +144,7 @@ try {
     Write-Host "    $fileCount DLLs bundled (unfiltered - see script header re: fetch-windows-native-deps.sh for a tighter bundle)"
 
     Write-Host "==> Packing NuGet package..."
-    dotnet pack (Join-Path $ProjectDir "CSGtk.Gtk.Native.Windows.csproj") -c Release -o (Join-Path $RepoRoot "src\local-packages")
+    dotnet pack (Join-Path $ProjectDir "CSDict.Gtk.Native.Windows.csproj") -c Release -o (Join-Path $RepoRoot "src\local-packages")
     if ($LASTEXITCODE -ne 0) { throw "dotnet pack failed with exit code $LASTEXITCODE" }
 
     Write-Host "==> Done."

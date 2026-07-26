@@ -22,19 +22,19 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}" -replace '^v', ''
-          dotnet publish src/CSGtk.App/CSGtk.App.csproj -c Release -r win-x64 --self-contained true `
+          dotnet publish src/CSDict.App/CSDict.App.csproj -c Release -r win-x64 --self-contained true `
             -p:Version=$version -o publish/win-x64
 
       - name: Zip
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}" -replace '^v', ''
-          Compress-Archive -Path publish/win-x64/* -DestinationPath "Dictionary-$version-win-x64.zip"
+          Compress-Archive -Path publish/win-x64/* -DestinationPath "CSDict-$version-win-x64.zip"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Dictionary-win-x64
-          path: Dictionary-*-win-x64.zip
+          name: CSDict-win-x64
+          path: CSDict-*-win-x64.zip
 
   build-linux:
     runs-on: ubuntu-latest
@@ -48,18 +48,18 @@ jobs:
       - name: Publish self-contained linux-x64
         run: |
           version="${GITHUB_REF_NAME#v}"
-          dotnet publish src/CSGtk.App/CSGtk.App.csproj -c Release -r linux-x64 --self-contained true \
+          dotnet publish src/CSDict.App/CSDict.App.csproj -c Release -r linux-x64 --self-contained true \
             -p:Version="$version" -o publish/linux-x64
 
       - name: Zip
         run: |
           version="${GITHUB_REF_NAME#v}"
-          (cd publish/linux-x64 && zip -r "$GITHUB_WORKSPACE/Dictionary-$version-linux-x64.zip" .)
+          (cd publish/linux-x64 && zip -r "$GITHUB_WORKSPACE/CSDict-$version-linux-x64.zip" .)
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Dictionary-linux-x64
-          path: Dictionary-*-linux-x64.zip
+          name: CSDict-linux-x64
+          path: CSDict-*-linux-x64.zip
 
   build-macos:
     runs-on: macos-latest
@@ -80,7 +80,7 @@ jobs:
       - name: Publish self-contained ${{ matrix.rid }}
         run: |
           version="${GITHUB_REF_NAME#v}"
-          dotnet publish src/CSGtk.App/CSGtk.App.csproj -c Release -r ${{ matrix.rid }} --self-contained true \
+          dotnet publish src/CSDict.App/CSDict.App.csproj -c Release -r ${{ matrix.rid }} --self-contained true \
             -p:Version="$version" -o publish/${{ matrix.rid }}
 
       # A plain `dotnet publish` output is just a folder of files - macOS only treats a directory
@@ -88,10 +88,10 @@ jobs:
       # Contents/{MacOS,Info.plist} layout. Ad-hoc codesigning (no Apple Developer certificate
       # involved) is enough to get past the *worst* Gatekeeper "app is damaged" failure mode, but
       # since it's not notarized, first launch will still need right-click -> Open.
-      - name: Assemble Dictionary.app
+      - name: Assemble CSDict.app
         run: |
           version="${GITHUB_REF_NAME#v}"
-          app="Dictionary.app"
+          app="CSDict.app"
           rm -rf "$app"
           mkdir -p "$app/Contents/MacOS"
           cp -R publish/${{ matrix.rid }}/. "$app/Contents/MacOS/"
@@ -101,17 +101,17 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>CFBundleName</key>
-            <string>Dictionary</string>
+            <string>CSDict</string>
             <key>CFBundleDisplayName</key>
-            <string>Dictionary</string>
+            <string>CSDict</string>
             <key>CFBundleIdentifier</key>
-            <string>dev.csgtk.Dictionary</string>
+            <string>dev.csdict.CSDict</string>
             <key>CFBundleVersion</key>
             <string>$version</string>
             <key>CFBundleShortVersionString</key>
             <string>$version</string>
             <key>CFBundleExecutable</key>
-            <string>CSGtk.App</string>
+            <string>CSDict.App</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>LSMinimumSystemVersion</key>
@@ -128,15 +128,15 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           rm -rf dmg-root
           mkdir dmg-root
-          cp -R Dictionary.app dmg-root/
+          cp -R CSDict.app dmg-root/
           ln -s /Applications dmg-root/Applications
-          hdiutil create -volname "Dictionary" -srcfolder dmg-root -ov -format UDZO \
-            "Dictionary-$version-${{ matrix.arch_label }}.dmg"
+          hdiutil create -volname "CSDict" -srcfolder dmg-root -ov -format UDZO \
+            "CSDict-$version-${{ matrix.arch_label }}.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Dictionary-${{ matrix.arch_label }}
-          path: Dictionary-*.dmg
+          name: CSDict-${{ matrix.arch_label }}
+          path: CSDict-*.dmg
 
   create-release:
     needs: [build-windows, build-linux, build-macos]
@@ -148,18 +148,29 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" artifacts/*/* \
-            --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" \
-            --notes "$(cat <<'EOF'
+          tag="${{ github.ref_name }}"
+          repo="${{ github.repository }}"
+
+          # If the tag's release already exists - e.g. it was drafted through the GitHub UI, which
+          # is what created the tag and triggered this workflow in the first place - `gh release
+          # create` would just fail with "a release with the same tag name already exists". Upload
+          # the binaries onto that existing release instead of trying to create a second one.
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            gh release upload "$tag" artifacts/*/* --repo "$repo" --clobber
+          else
+            gh release create "$tag" artifacts/*/* \
+              --repo "$repo" \
+              --title "$tag" \
+              --notes "$(cat <<'EOF'
           Automated release build.
 
-          - **Windows (x64)** - unzip and run `CSGtk.App.exe`.
-          - **Linux (x64)** - unzip and run `CSGtk.App`. Requires GTK 4 to already be installed via your package manager (e.g. `apt install libgtk-4-1`, `dnf install gtk4`, `pacman -S gtk4`).
-          - **macOS (Apple Silicon / Intel)** - open the `.dmg` matching your Mac and drag `Dictionary.app` into Applications. The app is ad-hoc signed but not notarized by Apple, so the first launch may need right-click -> Open (or `xattr -cr /Applications/Dictionary.app`) to get past Gatekeeper.
+          - **Windows (x64)** - unzip and run `CSDict.App.exe`.
+          - **Linux (x64)** - unzip and run `CSDict.App`. Requires GTK 4 to already be installed via your package manager (e.g. `apt install libgtk-4-1`, `dnf install gtk4`, `pacman -S gtk4`).
+          - **macOS (Apple Silicon / Intel)** - open the `.dmg` matching your Mac and drag `CSDict.app` into Applications. The app is ad-hoc signed but not notarized by Apple, so the first launch may need right-click -> Open (or `xattr -cr /Applications/CSDict.app`) to get past Gatekeeper.
           EOF
           )"
+          fi

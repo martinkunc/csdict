@@ -2,7 +2,7 @@
 # Fetches GTK 4 and its full runtime dependency closure for macOS (both arm64 and x64) from
 # Homebrew's prebuilt bottles, rewrites each dylib's install names to be self-contained
 # (@rpath-relative instead of an absolute Homebrew prefix path), verifies the resulting set is
-# import-complete, bundles it into src/CSGtk.Gtk.Native.macOS/runtimes/osx-{arm64,x64}/native/,
+# import-complete, bundles it into src/CSDict.Gtk.Native.macOS/runtimes/osx-{arm64,x64}/native/,
 # and packs the NuGet package into src/local-packages/.
 #
 # Rerun this whenever you want to refresh to a newer GTK4/Homebrew release - it always re-resolves
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_DIR="$REPO_ROOT/src/CSGtk.Gtk.Native.macOS"
+PROJECT_DIR="$REPO_ROOT/src/CSDict.Gtk.Native.macOS"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -259,6 +259,6 @@ done
 
 echo ""
 echo "==> Packing NuGet package..."
-dotnet pack "$PROJECT_DIR/CSGtk.Gtk.Native.macOS.csproj" -c Release -o "$REPO_ROOT/src/local-packages"
+dotnet pack "$PROJECT_DIR/CSDict.Gtk.Native.macOS.csproj" -c Release -o "$REPO_ROOT/src/local-packages"
 
 echo "==> Done."

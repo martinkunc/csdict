@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetches GTK 4 and its full runtime dependency closure for Windows x64 from MSYS2's UCRT64
 # repository, verifies the resulting DLL set is import-complete, bundles it into
-# src/CSGtk.Gtk.Native.Windows/runtimes/win-x64/native/, and packs the NuGet package into
+# src/CSDict.Gtk.Native.Windows/runtimes/win-x64/native/, and packs the NuGet package into
 # src/local-packages/.
 #
 # Rerun this whenever you want to refresh to a newer GTK4/MSYS2 release - it always re-resolves
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_DIR="$REPO_ROOT/src/CSGtk.Gtk.Native.Windows"
+PROJECT_DIR="$REPO_ROOT/src/CSDict.Gtk.Native.Windows"
 BUNDLE_DIR="$PROJECT_DIR/runtimes/win-x64/native"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -202,6 +202,6 @@ done
 echo "    $(ls "$BUNDLE_DIR" | wc -l) files, $(du -sh "$BUNDLE_DIR" | cut -f1)"
 
 echo "==> Packing NuGet package..."
-dotnet pack "$PROJECT_DIR/CSGtk.Gtk.Native.Windows.csproj" -c Release -o "$REPO_ROOT/src/local-packages"
+dotnet pack "$PROJECT_DIR/CSDict.Gtk.Native.Windows.csproj" -c Release -o "$REPO_ROOT/src/local-packages"
 
 echo "==> Done."

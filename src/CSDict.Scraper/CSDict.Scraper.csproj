@@ -5,24 +5,15 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CSDict.Gtk" Version="1.1.0" />
-    <PackageReference Include="CSDict.Gtk.Native.Linux" Version="2.1.0" />
-    <PackageReference Include="CSDict.Gtk.Native.macOS" Version="2.0.0" />
-    <PackageReference Include="CSDict.Gtk.Native.Windows" Version="2.0.1" />
     <PackageReference Include="SharpCompress" Version="1.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../CSDict.Sqlite/CSDict.Sqlite.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="Dictionaries\*.sqlite3" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace CSDict.App.Sqlite;
+namespace CSDict.Sqlite;
 
 /// <summary>P/Invoke bindings for the subset of libsqlite3 needed for read-only querying:
 /// open a connection, prepare/bind/step/finalize a statement, read column values.</summary>

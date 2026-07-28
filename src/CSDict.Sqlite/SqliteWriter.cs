@@ -1,13 +1,12 @@
 using System.Text.Json;
-using CSDict.App.Scraping;
 
-namespace CSDict.App.Sqlite;
+namespace CSDict.Sqlite;
 
 /// <summary>C# port of dicts/common/sqlite_io.py's SqliteWriter: writes ScrapedEntry records into
 /// the same entries/senses/translations/examples schema the Python scrapers produce, so the app's
 /// existing read-side queries (DictionaryCatalog, LookupService, WordIndex) work unchanged against
 /// dictionaries generated here. Each run starts from a fresh file, same as the Python writer.</summary>
-internal sealed class SqliteWriter : IDisposable
+public sealed class SqliteWriter : IDisposable
 {
     private const string Schema = """
         CREATE TABLE entries (

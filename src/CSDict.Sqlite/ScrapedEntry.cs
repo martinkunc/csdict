@@ -1,12 +1,15 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace CSDict.App.Scraping;
+namespace CSDict.Sqlite;
 
 /// <summary>C# port of dicts/common/schema.py's DictionaryEntry - kept field-for-field identical
 /// so a ScrapedEntry can be written straight into the same entries/senses/translations/examples
-/// SQLite schema the Python scrapers produce (see SqliteWriter).</summary>
-internal sealed class ScrapedEntry
+/// SQLite schema the scrapers produce (see SqliteWriter). Lives here (rather than in
+/// CSDict.Scraper, which is the only project that constructs these) since SqliteWriter - the
+/// thing that consumes them - is the shared read/write core used by both CSDict.Scraper and
+/// CSDict.App.</summary>
+public sealed class ScrapedEntry
 {
     public required string Id { get; init; }
     public required string Source { get; init; }
@@ -24,7 +27,7 @@ internal sealed class ScrapedEntry
     public List<ScrapedSense> Senses { get; init; } = [];
 }
 
-internal sealed class ScrapedSense
+public sealed class ScrapedSense
 {
     public List<string> Translations { get; init; } = [];
     public string? Gloss { get; init; }
@@ -32,9 +35,9 @@ internal sealed class ScrapedSense
     public List<string> Tags { get; init; } = [];
 }
 
-internal sealed record ScrapedExample(string SourceText, string TargetText);
+public sealed record ScrapedExample(string SourceText, string TargetText);
 
-internal static class ScrapedEntryId
+public static class ScrapedEntryId
 {
     /// <summary>Mirrors schema.py:make_id - stable hash-based id so re-running a scrape doesn't
     /// churn ids: sha1("{source}|{lemmaLang}|{targetLang}|{lemma}|{disambiguator}")[:16].</summary>

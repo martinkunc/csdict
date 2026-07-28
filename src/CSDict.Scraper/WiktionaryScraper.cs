@@ -1,9 +1,9 @@
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
-using CSDict.App.Sqlite;
+using CSDict.Sqlite;
 
-namespace CSDict.App.Scraping;
+namespace CSDict.Scraper;
 
 /// <summary>C# port of dicts/scrapers/wiktionary_kaikki.py: uses two kinds of kaikki.org files - a
 /// small pre-filtered per-language extract (that language's headwords, with English glosses, since
@@ -45,7 +45,7 @@ internal static class WiktionaryScraper
     /// <summary>X-&gt;en, where X is `lemmaLang` (must be a key of KaikkiLanguageNames): headword in
     /// X, glosses already in English because the extract is the English Wiktionary's own entries
     /// for X-language words.</summary>
-    public static async Task ScrapeToEnAsync(string lemmaLang, string cacheDir, string outputPath, IProgress<string>? progress, CancellationToken ct)
+    public static async Task ScrapeToEnAsync(string lemmaLang, string cacheDir, SqliteWriter writer, IProgress<string>? progress, CancellationToken ct)
     {
         string languageName = KaikkiLanguageNames[lemmaLang];
         string url = $"https://kaikki.org/dictionary/{languageName}/kaikki.org-dictionary-{languageName}.jsonl.gz";
@@ -63,7 +63,6 @@ internal static class WiktionaryScraper
             await Downloader.DownloadAsync(url, input, progress, ct);
         }
 
-        using SqliteWriter writer = SqliteWriter.Create(outputPath);
         int count = 0;
         foreach (JsonDocument doc in IterateJsonl(input))
         {
@@ -91,7 +90,7 @@ internal static class WiktionaryScraper
     /// <summary>en-&gt;X, where X is `targetLang`: streams the full raw Wiktextract dump (every
     /// English headword, with translations into every language Wiktionary covers) and keeps only
     /// entries with at least one translation whose language code matches `targetLang`.</summary>
-    public static async Task ScrapeFromEnAsync(string targetLang, string cacheDir, string outputPath, IProgress<string>? progress, CancellationToken ct)
+    public static async Task ScrapeFromEnAsync(string targetLang, string cacheDir, SqliteWriter writer, IProgress<string>? progress, CancellationToken ct)
     {
         Directory.CreateDirectory(cacheDir);
         string enInput = Path.Combine(cacheDir, "kaikki-raw-en.jsonl.gz");
@@ -105,7 +104,6 @@ internal static class WiktionaryScraper
             await Downloader.DownloadAsync(EnRawUrl, enInput, progress, ct);
         }
 
-        using SqliteWriter writer = SqliteWriter.Create(outputPath);
         int count = 0;
         long scanned = 0;
         foreach (JsonDocument doc in IterateJsonl(enInput))

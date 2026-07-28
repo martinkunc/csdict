@@ -1,0 +1,57 @@
+name: Build dictionaries
+
+# Manual only: scraping every direction (in particular Wiktionary's ~2.8GB raw dump) is slow and
+# hits third-party sites, so this should only run when someone deliberately wants to refresh the
+# published dictionaries - never on every push. See docs/design/scraper-and-distribution.md.
+#
+# Publishes to a single rolling "dictionaries" GitHub Release, overwriting its assets in place, so
+# the app always downloads from a fixed URL per direction:
+#   https://github.com/<owner>/<repo>/releases/download/dictionaries/{lemmaLang}_{targetLang}.zip
+on:
+  workflow_dispatch:
+    inputs:
+      languages:
+        description: 'Space-separated "lemmaLang:targetLang" pairs to rebuild (e.g. "cs:en en:cs"). Leave empty to rebuild every direction.'
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Scrape dictionaries
+        env:
+          LANGUAGES: ${{ inputs.languages }}
+        run: |
+          # shellcheck disable=SC2206 - intentional word-splitting of a space-separated input list
+          langs=($LANGUAGES)
+          ./scripts/build-dictionaries.sh "${langs[@]}"
+
+      - name: Zip each direction
+        run: |
+          cd dist/dictionaries
+          for f in *.sqlite3; do
+            zip "${f%.sqlite3}.zip" "$f"
+          done
+
+      - name: Publish to the rolling "dictionaries" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="${{ github.repository }}"
+          tag="dictionaries"
+
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/dictionaries/*.zip --repo "$repo" --clobber
+          else
+            gh release create "$tag" dist/dictionaries/*.zip \
+              --repo "$repo" \
+              --title "Dictionaries" \
+              --notes "Merged per-direction dictionary snapshots, one \`{lemmaLang}_{targetLang}.zip\` per direction. Rebuilt on demand by build-dictionaries.yml; assets are overwritten in place, not versioned - see docs/design/scraper-and-distribution.md."
+          fi

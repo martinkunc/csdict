@@ -1,8 +1,8 @@
 using System.IO.Compression;
 using System.Text.RegularExpressions;
-using CSDict.App.Sqlite;
+using CSDict.Sqlite;
 
-namespace CSDict.App.Scraping;
+namespace CSDict.Scraper;
 
 /// <summary>C# port of dicts/scrapers/wikdict.py: downloads WikDict's StarDict export
 /// (download.wikdict.com/dictionaries/stardict/wikdict-{cs-en,en-cs}.zip), flattens each HTML
@@ -24,7 +24,7 @@ internal static class WikDictScraper
         "href=\"([^\"]*creativecommons\\.org[^\"]*)\"", RegexOptions.Compiled);
 
     public static async Task ScrapeAsync(
-        string lemmaLang, string targetLang, string cacheDir, string outputPath,
+        string lemmaLang, string targetLang, string cacheDir, SqliteWriter writer,
         IProgress<string>? progress, CancellationToken ct)
     {
         string pair = Pairs[(lemmaLang, targetLang)];
@@ -59,7 +59,6 @@ internal static class WikDictScraper
         byte[] dictBlob = StarDict.ReadDictBlob(dictPath);
         List<StarDict.IdxRecord> records = StarDict.ReadIdx($"{withoutExt}.idx");
 
-        using SqliteWriter writer = SqliteWriter.Create(outputPath);
         int count = 0;
         foreach (StarDict.IdxRecord record in records)
         {

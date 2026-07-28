@@ -1,10 +1,10 @@
 using System.Runtime.InteropServices;
 
-namespace CSDict.App.Sqlite;
+namespace CSDict.Sqlite;
 
 /// <summary>Thin ergonomic wrapper over Sqlite3's raw P/Invoke surface: open a read-only
 /// connection, run a parameterized query, get mapped rows back.</summary>
-internal sealed class SqliteDatabase : IDisposable
+public sealed class SqliteDatabase : IDisposable
 {
     private readonly nint _db;
 
@@ -66,7 +66,7 @@ internal sealed class SqliteDatabase : IDisposable
 
 /// <summary>A single result row, valid only for the duration of the map callback that receives it
 /// (columns read straight off the live statement, text copied out immediately).</summary>
-internal readonly struct SqliteRow(nint stmt)
+public readonly struct SqliteRow(nint stmt)
 {
     public string? GetString(int col)
     {

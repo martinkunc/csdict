@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 
-namespace CSDict.App.Scraping;
+namespace CSDict.Scraper;
 
 /// <summary>C# port of dicts/common/download.py: streaming HTTP download with resume support and
 /// a best-effort Last-Modified year lookup, shared by every scraper below.</summary>

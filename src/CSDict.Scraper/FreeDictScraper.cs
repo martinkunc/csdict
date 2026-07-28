@@ -1,10 +1,10 @@
 using System.Text.Json;
 using System.Xml.Linq;
-using CSDict.App.Sqlite;
+using CSDict.Sqlite;
 using SharpCompress.Compressors.Xz;
 using SharpCompress.Readers.Tar;
 
-namespace CSDict.App.Scraping;
+namespace CSDict.Scraper;
 
 /// <summary>C# port of dicts/scrapers/freedict.py: downloads a FreeDict ".src.tar.xz" release (TEI
 /// XML source, not the compiled StarDict blob) so license/authors/year can be read straight out of
@@ -62,7 +62,7 @@ internal static class FreeDictScraper
     private static readonly HttpClient Http = new();
 
     public static async Task ScrapeAsync(
-        string lemmaLang, string targetLang, string cacheDir, string outputPath,
+        string lemmaLang, string targetLang, string cacheDir, SqliteWriter writer,
         IProgress<string>? progress, CancellationToken ct)
     {
         string name = Names[(lemmaLang, targetLang)];
@@ -85,7 +85,6 @@ internal static class FreeDictScraper
 
         progress?.Report($"Parsing entries (edition={meta.Edition}, year={meta.Year})...");
 
-        using SqliteWriter writer = SqliteWriter.Create(outputPath);
         int count = 0;
         foreach (XElement entryEl in root.Descendants(Tei + "entry"))
         {

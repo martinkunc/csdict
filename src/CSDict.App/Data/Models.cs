@@ -1,6 +1,10 @@
 namespace CSDict.App.Data;
 
-internal sealed record DictionarySource(string Source, string LemmaLang, string TargetLang, string FilePath);
+/// <summary>One loaded "{lemmaLang}_{targetLang}.sqlite3" file - a merged direction that may
+/// contain rows from several distinct `source` values (freedict/wikdict/wiktionary/...), unlike
+/// the old one-file-per-source layout where a file's single source was implied by its whole
+/// contents.</summary>
+internal sealed record DictionaryFile(string LemmaLang, string TargetLang, string FilePath, IReadOnlyList<string> Sources);
 
 internal sealed record SourceResult(string Source, List<EntryResult> Entries);
 

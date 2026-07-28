@@ -1,9 +1,9 @@
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using CSDict.App.Data;
-using CSDict.App.Scraping;
-using CSDict.App.Sqlite;
 using CSDict.Gtk;
+using CSDict.Sqlite;
 
 namespace CSDict.App;
 
@@ -86,7 +86,7 @@ internal static unsafe class Program
     private static string? s_activeSourceFilter;
     private static (string Lemma, string Lang)? s_selected;
     private static string s_dictionariesDir = "";
-    private static string s_cacheRootDir = "";
+    private static string s_downloadTempDir = "";
 
     private static nint s_mainWindow;
     private static nint s_searchEntry;
@@ -100,13 +100,18 @@ internal static unsafe class Program
     private static nint s_dialogStatusLabel;
     private static nint s_dialogDownloadButton;
     private static nint s_dialogRemoveButton;
+    private static nint s_dialogFromLangDropDown;
+    private static nint s_dialogToLangDropDown;
     private static bool s_dialogOpen;
     private static bool s_downloadInProgress;
-    private static DictionaryDefinition? s_dialogSelected;
+    private static DictionaryDirection? s_dialogSelected;
 
     private static readonly Dictionary<nint, (string Lemma, string Lang)> s_rowData = new();
     private static readonly Dictionary<nint, string?> s_sourceButtons = new();
-    private static readonly Dictionary<nint, DictionaryDefinition> s_dictionaryDialogRows = new();
+    private static readonly Dictionary<nint, DictionaryDirection> s_dictionaryDialogRows = new();
+    private static readonly Dictionary<(string LemmaLang, string TargetLang), nint> s_dictionaryDialogRowsByDirection = new();
+    private static string[] s_dialogFromLangs = [];
+    private static string[] s_dialogToLangs = [];
 
     [STAThread]
     private static int Main()
@@ -115,7 +120,7 @@ internal static unsafe class Program
         SqliteNativeResolver.Register();
 
         s_dictionariesDir = Path.Combine(AppContext.BaseDirectory, "Dictionaries");
-        s_cacheRootDir = Path.Combine(AppContext.BaseDirectory, "Cache");
+        s_downloadTempDir = Path.Combine(AppContext.BaseDirectory, "Cache");
         s_catalog = DictionaryCatalog.Load(s_dictionariesDir);
         s_wordIndex = WordIndex.Build(s_catalog);
 
@@ -391,9 +396,133 @@ internal static unsafe class Program
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void OnDictionaryButtonClicked(nint button, nint userData) => ShowDictionaryDialog();
 
-    /// <summary>A small modal library manager: lists every (source, direction) dictionary this app
-    /// knows how to fetch, whether or not it's currently downloaded, and lets the user download a
-    /// missing one or remove one that's already on disk.</summary>
+    private const string AllLanguagesOption = "All";
+
+    /// <summary>Two GtkDropDowns ("From"/"To" language) that filter the direction list below down
+    /// to whichever source/destination language is picked - "All" (the first entry in each list)
+    /// leaves that axis unfiltered, matching the one-file-per-direction model. "From" defaults to
+    /// the OS's current UI language instead of "All" when that language is one of the available
+    /// lemma languages, since that's overwhelmingly the language the user wants to look words up
+    /// from.</summary>
+    private static nint BuildLanguagePickerRow()
+    {
+        s_dialogFromLangs = [AllLanguagesOption, .. DictionaryDirections.LemmaLangs];
+        s_dialogToLangs = [AllLanguagesOption, .. DictionaryDirections.TargetLangs];
+
+        uint defaultFromIndex = 0;
+        string osLemmaLang = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+        int osLemmaLangIndex = Array.IndexOf(s_dialogFromLangs, osLemmaLang);
+        if (osLemmaLangIndex > 0)
+        {
+            defaultFromIndex = (uint)osLemmaLangIndex;
+        }
+
+        nint row = Gtk4.gtk_box_new(GtkOrientation.Horizontal, 6);
+
+        nint fromLabel = Gtk4.gtk_label_new("From");
+        Gtk4.gtk_widget_add_css_class(fromLabel, "csdict-placeholder");
+        Gtk4.gtk_box_append(row, fromLabel);
+
+        s_dialogFromLangDropDown = Gtk4.gtk_drop_down_new(BuildStringList(s_dialogFromLangs), 0);
+        Gtk4.gtk_widget_set_hexpand(s_dialogFromLangDropDown, true);
+        if (defaultFromIndex != 0)
+        {
+            Gtk4.gtk_drop_down_set_selected(s_dialogFromLangDropDown, defaultFromIndex);
+        }
+
+        GObject.Connect(s_dialogFromLangDropDown, "notify::selected", &OnLanguagePickerChanged);
+        Gtk4.gtk_box_append(row, s_dialogFromLangDropDown);
+
+        nint toLabel = Gtk4.gtk_label_new("To");
+        Gtk4.gtk_widget_add_css_class(toLabel, "csdict-placeholder");
+        Gtk4.gtk_box_append(row, toLabel);
+
+        s_dialogToLangDropDown = Gtk4.gtk_drop_down_new(BuildStringList(s_dialogToLangs), 0);
+        Gtk4.gtk_widget_set_hexpand(s_dialogToLangDropDown, true);
+        GObject.Connect(s_dialogToLangDropDown, "notify::selected", &OnLanguagePickerChanged);
+        Gtk4.gtk_box_append(row, s_dialogToLangDropDown);
+
+        return row;
+    }
+
+    private static nint BuildStringList(IReadOnlyList<string> items)
+    {
+        nint list = Gtk4.gtk_string_list_new(0);
+        foreach (string item in items)
+        {
+            Gtk4.gtk_string_list_append(list, item);
+        }
+
+        return list;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnLanguagePickerChanged(nint dropDown, nint pspec, nint userData) => ApplyDictionaryDialogFilter();
+
+    /// <summary>Shows/hides each direction's row to match the "From"/"To" dropdowns - "All" (index
+    /// 0) leaves that axis unfiltered. If the currently selected row gets filtered out, falls back
+    /// to the first row that's still visible (or none, clearing the selection) so the
+    /// Download/Remove buttons never point at a hidden row.</summary>
+    private static void ApplyDictionaryDialogFilter()
+    {
+        uint fromIndex = Gtk4.gtk_drop_down_get_selected(s_dialogFromLangDropDown);
+        uint toIndex = Gtk4.gtk_drop_down_get_selected(s_dialogToLangDropDown);
+        if (fromIndex == Gtk4.GTK_INVALID_LIST_POSITION || toIndex == Gtk4.GTK_INVALID_LIST_POSITION)
+        {
+            return;
+        }
+
+        string? lemmaLang = fromIndex == 0 ? null : s_dialogFromLangs[fromIndex];
+        string? targetLang = toIndex == 0 ? null : s_dialogToLangs[toIndex];
+
+        nint firstVisibleRow = 0;
+        DictionaryDirection? firstVisibleDirection = null;
+        bool selectedStillVisible = false;
+        foreach (DictionaryDirection direction in DictionaryDirections.All)
+        {
+            if (!s_dictionaryDialogRowsByDirection.TryGetValue((direction.LemmaLang, direction.TargetLang), out nint row))
+            {
+                continue;
+            }
+
+            bool matches = (lemmaLang is null || direction.LemmaLang == lemmaLang)
+                && (targetLang is null || direction.TargetLang == targetLang);
+            Gtk4.gtk_widget_set_visible(row, matches);
+            if (!matches)
+            {
+                continue;
+            }
+
+            if (firstVisibleDirection is null)
+            {
+                firstVisibleRow = row;
+                firstVisibleDirection = direction;
+            }
+
+            if (direction == s_dialogSelected)
+            {
+                selectedStillVisible = true;
+            }
+        }
+
+        if (!selectedStillVisible)
+        {
+            s_dialogSelected = firstVisibleDirection;
+            if (firstVisibleDirection is not null)
+            {
+                Gtk4.gtk_list_box_select_row(s_dialogList, firstVisibleRow);
+            }
+
+            UpdateDialogActionState();
+        }
+    }
+
+    /// <summary>A small modal library manager: lists every dictionary direction this app knows how
+    /// to fetch (each merging every source that covers it into a single file - see
+    /// docs/design/scraper-and-distribution.md), whether or not it's currently downloaded, and lets
+    /// the user download a missing one or remove one that's already on disk. Two comboboxes above
+    /// the list let you jump straight to a direction by picking its "from"/"to" language instead of
+    /// scanning the list.</summary>
     private static void ShowDictionaryDialog()
     {
         nint dialog = Gtk4.gtk_window_new();
@@ -404,7 +533,7 @@ internal static unsafe class Program
         Gtk4.gtk_window_set_title(dialog, "Dictionaries");
         Gtk4.gtk_window_set_transient_for(dialog, s_mainWindow);
         Gtk4.gtk_window_set_modal(dialog, true);
-        Gtk4.gtk_window_set_default_size(dialog, 340, 420);
+        Gtk4.gtk_window_set_default_size(dialog, 340, 460);
 
         nint container = Gtk4.gtk_box_new(GtkOrientation.Vertical, 8);
         Gtk4.gtk_widget_set_margin_start(container, 10);
@@ -412,22 +541,26 @@ internal static unsafe class Program
         Gtk4.gtk_widget_set_margin_top(container, 10);
         Gtk4.gtk_widget_set_margin_bottom(container, 10);
 
+        Gtk4.gtk_box_append(container, BuildLanguagePickerRow());
+
         s_dialogList = Gtk4.gtk_list_box_new();
         Gtk4.gtk_list_box_set_selection_mode(s_dialogList, GtkSelectionMode.Browse);
         Gtk4.gtk_list_box_set_activate_on_single_click(s_dialogList, true);
         GObject.Connect(s_dialogList, "row-activated", &OnDictionaryDialogRowActivated);
 
         s_dictionaryDialogRows.Clear();
-        foreach (DictionaryDefinition def in DictionaryDownloader.All)
+        s_dictionaryDialogRowsByDirection.Clear();
+        foreach (DictionaryDirection direction in DictionaryDirections.All)
         {
-            AppendDictionaryDialogRow(def);
+            AppendDictionaryDialogRow(direction);
         }
 
         // GTK auto-selects the first row for a Browse-mode list box as soon as it has children,
         // but that doesn't raise "row-activated" - so the action-button state has to be primed
         // manually to match, or Download/Remove stay hidden until the user clicks the (already
-        // visibly selected) first row themselves.
-        s_dialogSelected = DictionaryDownloader.All.Count > 0 ? DictionaryDownloader.All[0] : null;
+        // visibly selected) first row themselves. This also applies whatever filter the dropdowns'
+        // (possibly non-"All") defaults imply, hiding rows and selecting the first one left visible.
+        ApplyDictionaryDialogFilter();
 
         nint scroller = Gtk4.gtk_scrolled_window_new();
         Gtk4.gtk_scrolled_window_set_policy(scroller, GtkPolicyType.Never, GtkPolicyType.Automatic);
@@ -461,22 +594,43 @@ internal static unsafe class Program
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void OnDictionaryDialogDestroyed(nint window, nint userData) => s_dialogOpen = false;
 
-    private static void AppendDictionaryDialogRow(DictionaryDefinition def)
+    private static void AppendDictionaryDialogRow(DictionaryDirection direction)
     {
-        nint label = Gtk4.gtk_label_new(DictionaryRowText(def));
+        nint label = Gtk4.gtk_label_new(DictionaryRowText(direction));
         Gtk4.gtk_label_set_xalign(label, 0);
         Gtk4.gtk_widget_set_margin_start(label, 8);
         Gtk4.gtk_widget_set_margin_end(label, 8);
         Gtk4.gtk_widget_set_margin_top(label, 6);
         Gtk4.gtk_widget_set_margin_bottom(label, 6);
-        s_dictionaryDialogRows[label] = def;
+        s_dictionaryDialogRows[label] = direction;
         Gtk4.gtk_list_box_append(s_dialogList, label);
+        s_dictionaryDialogRowsByDirection[(direction.LemmaLang, direction.TargetLang)] = GetLastChild(s_dialogList);
     }
 
-    private static string DictionaryRowText(DictionaryDefinition def) =>
-        $"{def.DisplayName} — {(File.Exists(GetDictionaryPath(def)) ? "Downloaded" : "Not downloaded")}";
+    /// <summary>The listbox's own children are the GtkListBoxRow wrappers GtkListBox creates
+    /// around each appended child - gtk_list_box_append itself returns void, so the row for the
+    /// child just appended is simply whichever one is currently last.</summary>
+    private static nint GetLastChild(nint widget)
+    {
+        nint child = Gtk4.gtk_widget_get_first_child(widget);
+        if (child == 0)
+        {
+            return 0;
+        }
 
-    private static string GetDictionaryPath(DictionaryDefinition def) => Path.Combine(s_dictionariesDir, def.FileName);
+        nint next;
+        while ((next = Gtk4.gtk_widget_get_next_sibling(child)) != 0)
+        {
+            child = next;
+        }
+
+        return child;
+    }
+
+    private static string DictionaryRowText(DictionaryDirection direction) =>
+        $"{direction.DisplayName} — {(File.Exists(GetDictionaryPath(direction)) ? "Downloaded" : "Not downloaded")}";
+
+    private static string GetDictionaryPath(DictionaryDirection direction) => Path.Combine(s_dictionariesDir, direction.FileName);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void OnDictionaryDialogRowActivated(nint listBox, nint row, nint userData)
@@ -487,7 +641,7 @@ internal static unsafe class Program
         }
 
         nint child = Gtk4.gtk_list_box_row_get_child(row);
-        if (!s_dictionaryDialogRows.TryGetValue(child, out DictionaryDefinition? def))
+        if (!s_dictionaryDialogRows.TryGetValue(child, out DictionaryDirection? def))
         {
             return;
         }
@@ -530,7 +684,7 @@ internal static unsafe class Program
         Gtk4.gtk_label_set_text(s_dialogStatusLabel, $"Starting download of {def.DisplayName}...");
 
         string outputPath = GetDictionaryPath(def);
-        string cacheRootDir = s_cacheRootDir;
+        string downloadTempDir = s_downloadTempDir;
         var progress = new Progress<string>(message =>
             GLib.RunOnMainThread(() =>
             {
@@ -540,10 +694,10 @@ internal static unsafe class Program
                 }
             }));
 
-        DownloadRunner.Run(def, outputPath, cacheRootDir, progress, error => GLib.RunOnMainThread(() => OnDownloadFinished(def, error)));
+        DownloadRunner.Run(def, outputPath, downloadTempDir, progress, error => GLib.RunOnMainThread(() => OnDownloadFinished(def, error)));
     }
 
-    private static void OnDownloadFinished(DictionaryDefinition def, Exception? error)
+    private static void OnDownloadFinished(DictionaryDirection def, Exception? error)
     {
         s_downloadInProgress = false;
         if (error is null)
@@ -839,21 +993,21 @@ internal static unsafe class Program
 }
 
 /// <summary>Kept outside Program (which is an `unsafe` class - `await` isn't allowed inside an
-/// unsafe context) so the actual scrape can be a normal async method; fires the completion
+/// unsafe context) so the actual download can be a normal async method; fires the completion
 /// callback with whatever exception (if any) it threw instead of letting it go unobserved.</summary>
 internal static class DownloadRunner
 {
-    public static void Run(DictionaryDefinition def, string outputPath, string cacheRootDir, IProgress<string> progress, Action<Exception?> onFinished)
+    public static void Run(DictionaryDirection direction, string outputPath, string downloadTempDir, IProgress<string> progress, Action<Exception?> onFinished)
     {
-        _ = RunAsync(def, outputPath, cacheRootDir, progress, onFinished);
+        _ = RunAsync(direction, outputPath, downloadTempDir, progress, onFinished);
     }
 
-    private static async Task RunAsync(DictionaryDefinition def, string outputPath, string cacheRootDir, IProgress<string> progress, Action<Exception?> onFinished)
+    private static async Task RunAsync(DictionaryDirection direction, string outputPath, string downloadTempDir, IProgress<string> progress, Action<Exception?> onFinished)
     {
         Exception? error = null;
         try
         {
-            await DictionaryDownloader.DownloadAsync(def, outputPath, cacheRootDir, progress, CancellationToken.None);
+            await DictionaryReleaseClient.DownloadAsync(direction, outputPath, downloadTempDir, progress, CancellationToken.None);
         }
         catch (Exception ex)
         {

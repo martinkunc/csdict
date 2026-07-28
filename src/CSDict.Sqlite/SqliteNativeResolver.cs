@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-namespace CSDict.App.Sqlite;
+namespace CSDict.Sqlite;
 
 /// <summary>
 /// Resolves "sqlite3" (the name Sqlite3.cs P/Invokes into) to its absolute path at runtime.
@@ -10,9 +10,10 @@ namespace CSDict.App.Sqlite;
 /// installed (it ships with the OS on Linux/macOS; on Windows install it the same way you installed
 /// GTK4, e.g. `pacman -S mingw-w64-x86_64-sqlite3` under MSYS2, or drop sqlite3.dll on PATH).
 /// One file covering all three platforms, since this binding is app-internal rather than a
-/// redistributable per-platform NuGet package like CSDict.Gtk.Native.*.
+/// redistributable per-platform NuGet package like CSDict.Gtk.Native.*. Shared by both CSDict.App
+/// (reads) and CSDict.Scraper (writes) - both P/Invoke into the same "sqlite3" library name.
 /// </summary>
-internal static class SqliteNativeResolver
+public static class SqliteNativeResolver
 {
     private static bool s_registered;
     private static Dictionary<string, string>? s_ldconfigCache;

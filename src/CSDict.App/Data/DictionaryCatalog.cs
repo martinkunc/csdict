@@ -1,13 +1,15 @@
-using CSDict.App.Sqlite;
+using CSDict.Sqlite;
 
 namespace CSDict.App.Data;
 
 /// <summary>Discovers and opens every *.sqlite3 dictionary snapshot in a directory at startup.
-/// Each file is self-describing (source/lemma_lang/target_lang read from its own `entries` table),
-/// so there's no filename convention to keep in sync with the scrapers that produced them.</summary>
+/// Each file is self-describing (lemma_lang/target_lang read from its own `entries` table, and its
+/// set of distinct `source` values via a separate query - a merged direction file can hold rows
+/// from several sources), so there's no filename convention to keep in sync with the scraper that
+/// produced them.</summary>
 internal sealed class DictionaryCatalog : IDisposable
 {
-    private readonly List<(DictionarySource Meta, SqliteDatabase Db)> _entries = [];
+    private readonly List<(DictionaryFile Meta, SqliteDatabase Db)> _entries = [];
 
     public IReadOnlyList<string> Sources { get; private set; } = [];
     public IReadOnlyList<string> LemmaLangs { get; private set; } = [];
@@ -28,26 +30,27 @@ internal sealed class DictionaryCatalog : IDisposable
                 continue;
             }
 
-            List<DictionarySource> meta = db.Query(
-                "SELECT source, lemma_lang, target_lang FROM entries LIMIT 1",
+            List<(string LemmaLang, string TargetLang)> direction = db.Query(
+                "SELECT lemma_lang, target_lang FROM entries LIMIT 1",
                 null,
-                row => new DictionarySource(row.GetString(0)!, row.GetString(1)!, row.GetString(2)!, path));
+                row => (row.GetString(0)!, row.GetString(1)!));
 
-            if (meta.Count == 0)
+            if (direction.Count == 0)
             {
                 db.Dispose();
                 continue;
             }
 
-            catalog._entries.Add((meta[0], db));
+            List<string> sources = db.Query("SELECT DISTINCT source FROM entries", null, row => row.GetString(0)!);
+            catalog._entries.Add((new DictionaryFile(direction[0].LemmaLang, direction[0].TargetLang, path, sources), db));
         }
 
-        catalog.Sources = catalog._entries.Select(e => e.Meta.Source).Distinct().OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList();
+        catalog.Sources = catalog._entries.SelectMany(e => e.Meta.Sources).Distinct().OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList();
         catalog.LemmaLangs = catalog._entries.Select(e => e.Meta.LemmaLang).Distinct().OrderBy(s => s, StringComparer.OrdinalIgnoreCase).ToList();
         return catalog;
     }
 
-    public IEnumerable<(DictionarySource Meta, SqliteDatabase Db)> ForLang(string lemmaLang) =>
+    public IEnumerable<(DictionaryFile Meta, SqliteDatabase Db)> ForLang(string lemmaLang) =>
         _entries.Where(e => e.Meta.LemmaLang == lemmaLang);
 
     public void Dispose()

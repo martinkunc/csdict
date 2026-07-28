@@ -4,7 +4,7 @@ using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace CSDict.App.Scraping;
+namespace CSDict.Scraper;
 
 /// <summary>C# port of dicts/common/stardict.py: a minimal StarDict (.ifo/.idx/.dict) reader, plus
 /// a tiny HTML tree builder for WikDict's "h" (html) entry format. Only implements what WikDict's

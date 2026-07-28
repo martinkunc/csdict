@@ -206,6 +206,30 @@ public static partial class Gtk4
     [LibraryImport(LibName)]
     public static partial nint gtk_list_box_get_selected_row(nint listBox);
 
+    // String list / drop down (combobox)
+
+    /// <summary>Pass 0 for `strings` to create an empty list and grow it with
+    /// gtk_string_list_append - simpler than marshalling a NULL-terminated gchar** array.</summary>
+    [LibraryImport(LibName)]
+    public static partial nint gtk_string_list_new(nint strings);
+
+    [LibraryImport(LibName, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial void gtk_string_list_append(nint list, string text);
+
+    /// <summary>`model` (transfer-full: the drop down takes ownership) is typically a
+    /// GtkStringList; `expression` is 0/NULL for the default of showing the model's own strings
+    /// directly, which GtkDropDown special-cases for a GtkStringList model.</summary>
+    [LibraryImport(LibName)]
+    public static partial nint gtk_drop_down_new(nint model, nint expression);
+
+    [LibraryImport(LibName)]
+    public static partial void gtk_drop_down_set_selected(nint dropDown, uint position);
+
+    [LibraryImport(LibName)]
+    public static partial uint gtk_drop_down_get_selected(nint dropDown);
+
+    public const uint GTK_INVALID_LIST_POSITION = uint.MaxValue;
+
     // Generic widget properties
 
     [LibraryImport(LibName)]

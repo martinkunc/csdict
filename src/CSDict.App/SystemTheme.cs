@@ -62,7 +62,7 @@ internal static class SystemTheme
         return output.Contains("dark", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string RunAndReadStdout(string fileName, string arguments)
+    internal static string RunAndReadStdout(string fileName, string arguments)
     {
         using var process = Process.Start(new ProcessStartInfo
         {

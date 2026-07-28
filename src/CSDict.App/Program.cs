@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using CSDict.App.Data;
@@ -59,6 +58,13 @@ internal static unsafe class Program
             }
             list row:hover {
                 background-color: {{bgAlt}};
+            }
+            list row:selected {
+                background-color: #3584e4;
+                color: #ffffff;
+            }
+            list row:selected:hover {
+                background-color: #2f6fc1;
             }
             label.csdict-placeholder {
                 color: {{fgDim}};
@@ -410,8 +416,8 @@ internal static unsafe class Program
         s_dialogToLangs = [AllLanguagesOption, .. DictionaryDirections.TargetLangs];
 
         uint defaultFromIndex = 0;
-        string osLemmaLang = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
-        int osLemmaLangIndex = Array.IndexOf(s_dialogFromLangs, osLemmaLang);
+        string? osLemmaLang = SystemLanguage.CurrentTwoLetterLanguage();
+        int osLemmaLangIndex = osLemmaLang is null ? -1 : Array.IndexOf(s_dialogFromLangs, osLemmaLang);
         if (osLemmaLangIndex > 0)
         {
             defaultFromIndex = (uint)osLemmaLangIndex;

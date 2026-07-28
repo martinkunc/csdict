@@ -181,8 +181,37 @@ internal static unsafe class Program
         Gtk4.gtk_window_set_default_size(window, 760, 520);
         Gtk4.gtk_window_set_titlebar(window, BuildHeaderBar());
         Gtk4.gtk_window_set_child(window, BuildContent());
+
+        // Up/Down step the similar-words selection the same way the header bar's prev/next
+        // buttons do - attached at the window level (rather than just the search entry) so it
+        // works no matter which widget currently has focus. Bubble phase is enough: neither
+        // GtkSearchEntry nor the other widgets in this window bind Up/Down to anything themselves,
+        // so the keypress reaches here unhandled.
+        nint keyController = Gtk4.gtk_event_controller_key_new();
+        GObject.Connect(keyController, "key-pressed", &OnWindowKeyPressed);
+        Gtk4.gtk_widget_add_controller(window, keyController);
+
         Gtk4.gtk_window_present(window);
         Gtk4.gtk_widget_grab_focus(s_searchEntry);
+    }
+
+    private const int GdkEventStop = 1;
+    private const int GdkEventPropagate = 0;
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static int OnWindowKeyPressed(nint controller, uint keyval, uint keycode, uint state, nint userData)
+    {
+        switch (keyval)
+        {
+            case Gtk4.GDK_KEY_Up:
+                StepSelectedWord(-1);
+                return GdkEventStop;
+            case Gtk4.GDK_KEY_Down:
+                StepSelectedWord(1);
+                return GdkEventStop;
+            default:
+                return GdkEventPropagate;
+        }
     }
 
     private static nint BuildHeaderBar()
@@ -935,7 +964,7 @@ internal static unsafe class Program
     private static void AppendSourceSection(SourceResult source)
     {
         nint sourceHeading = Gtk4.gtk_label_new(null);
-        Gtk4.gtk_label_set_markup(sourceHeading, $"<b>{Escape(source.Source)}</b>");
+        Gtk4.gtk_label_set_markup(sourceHeading, $"<b>{Escape(LanguageNames.English(source.TargetLang))}: {Escape(source.Source)}</b>");
         Gtk4.gtk_label_set_xalign(sourceHeading, 0);
         Gtk4.gtk_widget_set_margin_top(sourceHeading, 6);
         Gtk4.gtk_widget_add_css_class(sourceHeading, "csdict-heading");

@@ -6,7 +6,7 @@ namespace CSDict.App.Data;
 /// contents.</summary>
 internal sealed record DictionaryFile(string LemmaLang, string TargetLang, string FilePath, IReadOnlyList<string> Sources);
 
-internal sealed record SourceResult(string Source, List<EntryResult> Entries);
+internal sealed record SourceResult(string Source, string TargetLang, List<EntryResult> Entries);
 
 internal sealed record EntryResult(string? Pos, string? Ipa, string? Gender, List<SenseResult> Senses);
 

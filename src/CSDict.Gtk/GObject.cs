@@ -22,4 +22,11 @@ public static partial class GObject
     /// used by e.g. GtkListBox's "row-activated" (extra_arg is the activated GtkListBoxRow*).</summary>
     public static unsafe ulong Connect(nint instance, string signal, delegate* unmanaged[Cdecl]<nint, nint, nint, void> handler, nint userData = 0)
         => g_signal_connect_data(instance, signal, (nint)handler, userData, 0, 0);
+
+    /// <summary>Connects a signal using the (instance, keyval, keycode, state, user_data) -> gboolean
+    /// callback shape used by GtkEventControllerKey's "key-pressed" - the int return is GDK_EVENT_STOP
+    /// (1) to keep the key from also being handled by the focused widget, or GDK_EVENT_PROPAGATE (0)
+    /// to let it fall through as usual.</summary>
+    public static unsafe ulong Connect(nint instance, string signal, delegate* unmanaged[Cdecl]<nint, uint, uint, uint, nint, int> handler, nint userData = 0)
+        => g_signal_connect_data(instance, signal, (nint)handler, userData, 0, 0);
 }

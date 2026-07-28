@@ -9,9 +9,13 @@ internal static class LookupService
 {
     public static List<SourceResult> GetTranslations(DictionaryCatalog catalog, string lemma, string lang, string? sourceFilter)
     {
-        var bySource = new Dictionary<string, List<EntryResult>>();
+        // Keyed by (TargetLang, Source), not just Source - ForLang(lang) can return several
+        // directions out of "lang" (e.g. en_cs and en_de), and the same source name (e.g.
+        // "wiktionary") can show up in more than one of them, so grouping by Source alone would
+        // silently merge translations into different target languages under one heading.
+        var bySource = new Dictionary<(string TargetLang, string Source), List<EntryResult>>();
 
-        foreach (var (_, db) in catalog.ForLang(lang))
+        foreach (var (meta, db) in catalog.ForLang(lang))
         {
             List<(string Id, string Source, string? Pos, string? Ipa, string? Gender)> entries = db.Query(
                 "SELECT id, source, pos, ipa, gender FROM entries WHERE lemma_lang = ? AND lemma = ?",
@@ -62,10 +66,11 @@ internal static class LookupService
                     continue;
                 }
 
-                if (!bySource.TryGetValue(group.Key, out List<EntryResult>? list))
+                (string TargetLang, string Source) key = (meta.TargetLang, group.Key);
+                if (!bySource.TryGetValue(key, out List<EntryResult>? list))
                 {
                     list = [];
-                    bySource[group.Key] = list;
+                    bySource[key] = list;
                 }
 
                 list.AddRange(entryResults);
@@ -73,8 +78,9 @@ internal static class LookupService
         }
 
         return bySource
-            .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(kv => new SourceResult(kv.Key, kv.Value))
+            .OrderBy(kv => kv.Key.TargetLang, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(kv => kv.Key.Source, StringComparer.OrdinalIgnoreCase)
+            .Select(kv => new SourceResult(kv.Key.Source, kv.Key.TargetLang, kv.Value))
             .ToList();
     }
 }

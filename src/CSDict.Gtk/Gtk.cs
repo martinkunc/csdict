@@ -284,6 +284,17 @@ public static partial class Gtk4
     [LibraryImport(LibName)]
     public static partial void gtk_widget_set_sensitive(nint widget, [MarshalAs(UnmanagedType.Bool)] bool sensitive);
 
+    [LibraryImport(LibName)]
+    public static partial void gtk_widget_add_controller(nint widget, nint controller);
+
+    // Event controllers
+
+    [LibraryImport(LibName)]
+    public static partial nint gtk_event_controller_key_new();
+
+    public const uint GDK_KEY_Up = 0xff52;
+    public const uint GDK_KEY_Down = 0xff54;
+
     // CSS / styling
 
     [LibraryImport(LibName)]

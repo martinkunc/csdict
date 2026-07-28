@@ -12,8 +12,11 @@ internal static unsafe class Program
     /// light/dark preference (see SystemTheme.PrefersDark) - covers every widget kind the app
     /// actually uses (window, headerbar, plain/toggle buttons, the search entry, and the word-list
     /// GtkListBox/rows) so nothing is left showing the platform theme's default light chrome
-    /// against our own dark (or light) background.</summary>
-    private static string BuildCss(bool dark)
+    /// against our own dark (or light) background. contentFontScalePercent drives the "a"/"A"
+    /// zoom buttons - it's a percentage relative to the theme's normal font size, applied to
+    /// ".csdict-content" (the word list and the results pane), so Pango markup's relative sizes
+    /// (e.g. the lemma heading's size='large') scale proportionally along with it.</summary>
+    private static string BuildCss(bool dark, int contentFontScalePercent)
     {
         (string bg, string bgAlt, string bgAltHover, string fg, string fgDim, string fgHeading, string fgTranslation, string border) = dark
             ? ("#2a292c", "#3a393d", "#48474c", "#e8e7ea", "#98979b", "#cfced2", "#f5f4f7", "#201f22")
@@ -82,10 +85,17 @@ internal static unsafe class Program
             button.csdict-a-large label {
                 font-size: 17px;
             }
+            .csdict-content {
+                font-size: {{contentFontScalePercent}}%;
+            }
             """;
     }
 
     private const int MaxSimilarWords = 60;
+
+    /// <summary>Percentages the "a"/"A" toolbar buttons step through, relative to the theme's
+    /// normal font size - see BuildCss's contentFontScalePercent.</summary>
+    private static readonly int[] ContentFontScaleSteps = [80, 90, 100, 115, 130, 145, 160];
 
     private static DictionaryCatalog? s_catalog;
     private static WordIndex? s_wordIndex;
@@ -93,6 +103,8 @@ internal static unsafe class Program
     private static (string Lemma, string Lang)? s_selected;
     private static string s_dictionariesDir = "";
     private static string s_downloadTempDir = "";
+    private static nint s_cssProvider;
+    private static int s_contentFontScaleIndex = 2;
 
     private static nint s_mainWindow;
     private static nint s_searchEntry;
@@ -206,17 +218,17 @@ internal static unsafe class Program
         Gtk4.gtk_label_set_markup(title, "<b>CSDict</b>");
         Gtk4.gtk_header_bar_set_title_widget(headerBar, title);
 
+        // Plain (non-toggle) buttons - each click nudges the content font size up/down by one step
+        // rather than the pair acting as a persistent small/large selector, so neither should stay
+        // visually "pressed" afterward.
         nint fontBox = Gtk4.gtk_box_new(GtkOrientation.Horizontal, 0);
         Gtk4.gtk_widget_add_css_class(fontBox, "linked");
-        nint smallA = Gtk4.gtk_toggle_button_new_with_label("A");
+        nint smallA = Gtk4.gtk_button_new_with_label("A");
         Gtk4.gtk_widget_add_css_class(smallA, "csdict-a-small");
-        GObject.Connect(smallA, "toggled", &OnCheckedToggleChanged);
-        nint largeA = Gtk4.gtk_toggle_button_new_with_label("A");
+        GObject.Connect(smallA, "clicked", &OnDecreaseContentFontSizeClicked);
+        nint largeA = Gtk4.gtk_button_new_with_label("A");
         Gtk4.gtk_widget_add_css_class(largeA, "csdict-a-large");
-        GObject.Connect(largeA, "toggled", &OnCheckedToggleChanged);
-        Gtk4.gtk_toggle_button_set_group(largeA, smallA);
-        Gtk4.gtk_toggle_button_set_active(largeA, true);
-        Gtk4.gtk_widget_add_css_class(largeA, "csdict-checked");
+        GObject.Connect(largeA, "clicked", &OnIncreaseContentFontSizeClicked);
         Gtk4.gtk_box_append(fontBox, smallA);
         Gtk4.gtk_box_append(fontBox, largeA);
 
@@ -332,6 +344,7 @@ internal static unsafe class Program
         s_wordList = Gtk4.gtk_list_box_new();
         Gtk4.gtk_list_box_set_selection_mode(s_wordList, GtkSelectionMode.Browse);
         Gtk4.gtk_list_box_set_activate_on_single_click(s_wordList, true);
+        Gtk4.gtk_widget_add_css_class(s_wordList, "csdict-content");
         GObject.Connect(s_wordList, "row-activated", &OnRowActivated);
 
         nint leftScroller = Gtk4.gtk_scrolled_window_new();
@@ -344,6 +357,7 @@ internal static unsafe class Program
         Gtk4.gtk_widget_set_margin_end(s_resultsBox, 14);
         Gtk4.gtk_widget_set_margin_top(s_resultsBox, 10);
         Gtk4.gtk_widget_set_margin_bottom(s_resultsBox, 10);
+        Gtk4.gtk_widget_add_css_class(s_resultsBox, "csdict-content");
         ShowEmptyState(NoSelectionMessage());
 
         nint rightScroller = Gtk4.gtk_scrolled_window_new();
@@ -370,10 +384,28 @@ internal static unsafe class Program
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnDecreaseContentFontSizeClicked(nint button, nint userData) => AdjustContentFontScale(-1);
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnIncreaseContentFontSizeClicked(nint button, nint userData) => AdjustContentFontScale(1);
+
+    private static void AdjustContentFontScale(int stepDirection)
+    {
+        int clamped = Math.Clamp(s_contentFontScaleIndex + stepDirection, 0, ContentFontScaleSteps.Length - 1);
+        if (clamped == s_contentFontScaleIndex)
+        {
+            return;
+        }
+
+        s_contentFontScaleIndex = clamped;
+        ReapplyStyles();
+    }
+
     /// <summary>Keeps a "csdict-checked" class in sync with a GtkToggleButton's active state, so our
-    /// own CSS (see BuildCss) can style the selected tab/font-size button reliably instead of
-    /// depending on the ":checked" pseudo-class, which - unlike ":hover" or ":backdrop" - did not
-    /// visibly take effect against this app's stylesheet in testing.</summary>
+    /// own CSS (see BuildCss) can style the selected tab reliably instead of depending on the
+    /// ":checked" pseudo-class, which - unlike ":hover" or ":backdrop" - did not visibly take effect
+    /// against this app's stylesheet in testing.</summary>
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void OnCheckedToggleChanged(nint button, nint userData)
     {
@@ -992,10 +1024,16 @@ internal static unsafe class Program
 
     private static void ApplyStyles()
     {
-        nint provider = Gtk4.gtk_css_provider_new();
-        Gtk4.gtk_css_provider_load_from_string(provider, BuildCss(SystemTheme.PrefersDark()));
-        Gtk4.gtk_style_context_add_provider_for_display(Gtk4.gdk_display_get_default(), provider, Gtk4.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        s_cssProvider = Gtk4.gtk_css_provider_new();
+        Gtk4.gtk_style_context_add_provider_for_display(Gtk4.gdk_display_get_default(), s_cssProvider, Gtk4.GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        ReapplyStyles();
     }
+
+    /// <summary>Reloads the single app-wide CSS provider in place - used both at startup and every
+    /// time the "a"/"A" zoom buttons change ContentFontScaleSteps' current index, so the new size
+    /// takes effect immediately without rebuilding any widgets.</summary>
+    private static void ReapplyStyles() =>
+        Gtk4.gtk_css_provider_load_from_string(s_cssProvider, BuildCss(SystemTheme.PrefersDark(), ContentFontScaleSteps[s_contentFontScaleIndex]));
 }
 
 /// <summary>Kept outside Program (which is an `unsafe` class - `await` isn't allowed inside an

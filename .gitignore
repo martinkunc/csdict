@@ -17,3 +17,4 @@ src/CSDict.App/Dictionaries/
 src/CSDict.Gtk.Native.macOS/runtimes/osx-arm64/native/
 src/CSDict.Gtk.Native.macOS/runtimes/osx-x64/native/
 src/CSDict.Gtk.Native.Windows/runtimes/win-x64/native/
+.DS_Store

@@ -46,6 +46,22 @@ public static class NativeLibraryResolver
 
     private static string? FindLibrary(string name)
     {
+        // `dotnet publish -r <rid> --self-contained` flattens RID-specific native assets
+        // straight into the app's own output directory (Contents/MacOS/ once packed into a
+        // .app bundle) - there is no "runtimes/{rid}/native" subfolder in a published app; that
+        // layout only exists in the local NuGet package / project build output. Checking the
+        // flat directory first (matching the real deployment layout) is essential: if it's
+        // skipped and a Homebrew install happens to exist (e.g. glib pulled in as some unrelated
+        // formula's dependency, even with GTK itself absent), the resolver would load that
+        // Homebrew copy instead of the bundled one while some *other* bundled library (found via
+        // .NET's default probing of its own directory) keeps linking against the bundled copies
+        // via @rpath - two independent copies of glib/gobject/gio end up loaded in the same
+        // process, which duplicates GObject/ObjC type registration and segfaults.
+        if (FindLibraryIn(AppContext.BaseDirectory, name) is string flat)
+        {
+            return flat;
+        }
+
         string rid = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "osx-arm64" : "osx-x64";
         string bundledDir = Path.Combine(AppContext.BaseDirectory, "runtimes", rid, "native");
         if (Directory.Exists(bundledDir) && FindLibraryIn(bundledDir, name) is string bundled)

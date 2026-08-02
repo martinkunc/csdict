@@ -44,6 +44,18 @@ public static class NativeLibraryResolver
             PrependToPath(s_gtkBinDirectory);
         }
 
+        // On Windows, GSK's default renderer (ngl) negotiates a WGL/GL context on first window
+        // present, which measured ~250ms of pure startup latency here versus ~40ms for the cairo
+        // (software) renderer - presumably Windows' GL driver/extension-enumeration path is far
+        // slower to spin up than the X11/Wayland or macOS equivalents. This app's CSS never asks
+        // for GPU-only effects (see Program.BuildCss - box-shadow is explicitly disabled
+        // everywhere), so cairo costs nothing visually. Only set it if the environment doesn't
+        // already request a renderer, so an explicit GSK_RENDERER still wins.
+        if (Environment.GetEnvironmentVariable("GSK_RENDERER") is null)
+        {
+            Environment.SetEnvironmentVariable("GSK_RENDERER", "cairo");
+        }
+
         NativeLibrary.SetDllImportResolver(typeof(Gtk4).Assembly, Resolve);
     }
 

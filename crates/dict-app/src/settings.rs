@@ -1,0 +1,122 @@
+//! Persistent user settings (dictionary order / selection, catalog URL).
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DictSetting {
+    pub id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// Dictionaries in display order.
+    pub dictionaries: Vec<DictSetting>,
+    /// Where to get `catalog.json` (http(s) URL or local path).
+    pub catalog: String,
+    /// Look up words online in dictionaries that are not downloaded.
+    pub online: bool,
+    pub dark_mode: bool,
+}
+
+/// Default catalog location (set once the packs are hosted, e.g. on GitHub
+/// Releases); override with `CSDICT_CATALOG` or in the dictionaries menu.
+pub const DEFAULT_CATALOG: &str = "";
+
+impl Default for Settings {
+    fn default() -> Self {
+        let enabled = ["cs-en", "en-cs"];
+        Settings {
+            dictionaries: crate::library::BUILTIN
+                .iter()
+                .map(|(id, ..)| DictSetting { id: (*id).to_owned(), enabled: enabled.contains(id) })
+                .collect(),
+            catalog: DEFAULT_CATALOG.to_owned(),
+            online: true,
+            dark_mode: false,
+        }
+    }
+}
+
+pub struct Dirs {
+    pub config: PathBuf,
+    pub dicts: PathBuf,
+    pub cache: PathBuf,
+}
+
+impl Dirs {
+    pub fn new() -> Self {
+        let pd = directories::ProjectDirs::from("org", "csdict", "csdict");
+        let home = std::env::var_os("CSDICT_HOME").map(PathBuf::from);
+        let (config, data, cache) = match (&home, &pd) {
+            // Portable mode: everything in one folder.
+            (Some(h), _) => (h.clone(), h.clone(), h.join("cache")),
+            (None, Some(p)) => (p.config_dir().to_owned(), p.data_dir().to_owned(), p.cache_dir().to_owned()),
+            (None, None) => {
+                let base = std::env::temp_dir().join("csdict");
+                (base.clone(), base.clone(), base.join("cache"))
+            }
+        };
+        let dirs = Dirs { config, dicts: data.join("dicts"), cache };
+        for d in [&dirs.config, &dirs.dicts, &dirs.cache] {
+            let _ = std::fs::create_dir_all(d);
+        }
+        dirs
+    }
+
+    fn settings_file(&self) -> PathBuf {
+        self.config.join("settings.json")
+    }
+
+    pub fn load_settings(&self) -> Settings {
+        let mut s: Settings = std::fs::read(self.settings_file())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        // Make sure every built-in dictionary is listed.
+        for (id, ..) in crate::library::BUILTIN {
+            if !s.dictionaries.iter().any(|d| d.id == *id) {
+                s.dictionaries.push(DictSetting { id: (*id).to_owned(), enabled: false });
+            }
+        }
+        if let Ok(c) = std::env::var("CSDICT_CATALOG") {
+            s.catalog = c;
+        }
+        if s.catalog.trim().is_empty()
+            && let Some(local) = find_local_catalog()
+        {
+            s.catalog = local;
+        }
+        s
+    }
+
+    pub fn save_settings(&self, s: &Settings) {
+        if let Ok(json) = serde_json::to_vec_pretty(s) {
+            let tmp = self.settings_file().with_extension("json.tmp");
+            if std::fs::write(&tmp, json).is_ok() {
+                let _ = std::fs::rename(&tmp, self.settings_file());
+            }
+        }
+    }
+}
+
+/// Look for a locally built `dist/catalog.json`: in the current directory,
+/// next to the executable, or in the workspace when run via `cargo run`
+/// (executable in `target/<profile>/`).
+pub fn find_local_catalog() -> Option<String> {
+    let mut bases = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        bases.push(cwd);
+    }
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_owned())) {
+        bases.extend(dir.ancestors().take(4).map(|p| p.to_owned()));
+    }
+    bases
+        .iter()
+        .flat_map(|b| [b.join("dist").join("catalog.json"), b.join("catalog.json")])
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}

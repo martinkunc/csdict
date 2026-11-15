@@ -24,7 +24,7 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
-    eframe::run_native("csdict", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
+    eframe::run_native("csdict", options, Box::new(|cc| Ok(Box::new(app::App::new(cc, std::env::args().nth(1))))))
 }
 
 /// Window icon: a white "D" on a blue rounded square, drawn procedurally.

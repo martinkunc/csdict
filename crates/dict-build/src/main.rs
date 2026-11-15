@@ -11,9 +11,11 @@
 //! raw/kaikki-en/kaikki.org-dictionary-English.jsonl[.gz]
 //! raw/slovnik/*/en-cs.txt
 //! raw/slovnik/*/de-cs.txt
+//! raw/wordnet/json/entries-a.json …   (Open English WordNet JSON release, unpacked)
 //! ```
 
 mod slovnik;
+mod wordnet;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -303,6 +305,8 @@ fn lang_name(code: &str) -> &str {
 }
 
 struct PackSpec {
+    /// Defaults to `<src>-<tgt>`.
+    id: Option<&'static str>,
     src: &'static str,
     tgt: &'static str,
     entries: Vec<Entry>,
@@ -312,7 +316,7 @@ struct PackSpec {
 
 impl PackSpec {
     fn new(src: &'static str, tgt: &'static str) -> Self {
-        PackSpec { src, tgt, entries: Vec::new(), sources: Vec::new(), licenses: Vec::new() }
+        PackSpec { id: None, src, tgt, entries: Vec::new(), sources: Vec::new(), licenses: Vec::new() }
     }
     fn add(&mut self, entries: impl IntoIterator<Item = Entry>, source: &'static str, license: &'static str) {
         let before = self.entries.len();
@@ -393,6 +397,14 @@ fn build_all(raw: &Path, out: &Path, base_url: &str) -> Result<()> {
     p.add(slovnik::group(&en_cs_rows, false), "GNU/FDL slovník", LICENSE_SLOVNIK);
     specs.push(p);
 
+    // English definitions (WordNet)
+    let mut p = PackSpec::new("en", "en");
+    if let Some(dir) = wordnet::find(&raw.join("wordnet")) {
+        p.add(wordnet::load(&dir)?, "Open English WordNet", wordnet::LICENSE);
+    }
+    p.id = Some("en-wn");
+    specs.push(p);
+
     // de → en, grc → en
     for (code, data) in [("de", &de), ("grc", &grc)] {
         if let Some(d) = data {
@@ -434,10 +446,15 @@ fn build_all(raw: &Path, out: &Path, base_url: &str) -> Result<()> {
         if let Some(x) = extra {
             spec.entries.iter_mut().for_each(|e| x.enrich(e));
         }
-        let id = format!("{}-{}", spec.src, spec.tgt);
+        let id = spec.id.map(str::to_owned).unwrap_or_else(|| format!("{}-{}", spec.src, spec.tgt));
+        let name = if spec.src == spec.tgt {
+            format!("{} definitions ({})", lang_name(spec.src), spec.sources.join(", "))
+        } else {
+            format!("{} → {}", lang_name(spec.src), lang_name(spec.tgt))
+        };
         let meta = DictMeta {
             id: id.clone(),
-            name: format!("{} → {}", lang_name(spec.src), lang_name(spec.tgt)),
+            name,
             source_lang: spec.src.into(),
             target_lang: spec.tgt.into(),
             sources: spec.sources.join(", "),

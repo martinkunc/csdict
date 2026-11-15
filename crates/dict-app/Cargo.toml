@@ -20,3 +20,6 @@ default = ["tls"]
 tls = ["ureq/rustls"]
 # Developer aid: `EFRAME_SCREENSHOT_TO=out.png` saves a screenshot and exits.
 screenshot = ["eframe/__screenshot", "eframe/glow"]
+
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["eframe"] }

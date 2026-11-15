@@ -20,7 +20,32 @@ pub const BUILTIN: &[(&str, &str, &str, &str)] = &[
     ("grc-cs", "Ancient Greek → Czech", "grc", "cs"),
     ("de-en", "German → English", "de", "en"),
     ("grc-en", "Ancient Greek → English", "grc", "en"),
+    ("en-wn", "English definitions (WordNet)", "en", "en"),
 ];
+
+/// What the user selects and sees as one tab: both directions of a language
+/// pair plus related sources, (group id, name, member dictionary ids).
+/// Dictionaries not listed here (e.g. new ones from the catalog) form a
+/// group of their own.
+pub const GROUPS: &[(&str, &str, &[&str])] = &[
+    ("cs-en", "Czech ↔ English", &["cs-en", "en-cs", "en-wn"]),
+    ("cs-de", "Czech ↔ German", &["cs-de", "de-cs"]),
+    ("cs-grc", "Czech ↔ Ancient Greek", &["cs-grc", "grc-cs"]),
+    ("de-en", "German → English", &["de-en"]),
+    ("grc-en", "Ancient Greek → English", &["grc-en"]),
+];
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<String>,
+}
+
+/// Is `id` a member of a built-in group (and not a group id itself)?
+pub fn is_grouped_member(id: &str) -> bool {
+    !GROUPS.iter().any(|g| g.0 == id) && GROUPS.iter().any(|g| g.2.contains(&id))
+}
 
 pub const USER_AGENT: &str = concat!("csdict/", env!("CARGO_PKG_VERSION"), " (personal dictionary app)");
 
@@ -56,6 +81,16 @@ pub struct Slot {
 impl Slot {
     pub fn is_downloaded(&self) -> bool {
         self.dict.is_some()
+    }
+
+    /// Short label of the direction, e.g. `English → Czech`, `English definitions`.
+    pub fn direction(&self) -> String {
+        let name = |c: &str| dict_core::kaikki::language_name(c).unwrap_or(c).to_owned();
+        if self.source_lang == self.target_lang {
+            format!("{} definitions", name(&self.source_lang))
+        } else {
+            format!("{} → {}", name(&self.source_lang), name(&self.target_lang))
+        }
     }
 }
 
@@ -94,6 +129,32 @@ impl Library {
         let mut lib = Library { dir, slots, catalog_state: Default::default() };
         lib.scan_local();
         lib
+    }
+
+    /// Built-in groups (members limited to known dictionaries), then one
+    /// group for each other dictionary.
+    pub fn groups(&self) -> Vec<Group> {
+        let mut out: Vec<Group> = GROUPS
+            .iter()
+            .map(|(id, name, members)| Group {
+                id: (*id).to_owned(),
+                name: (*name).to_owned(),
+                members: members.iter().filter(|m| self.slots.contains_key(**m)).map(|m| (*m).to_owned()).collect(),
+            })
+            .filter(|g| !g.members.is_empty())
+            .collect();
+        let mut rest: Vec<&Slot> = self
+            .slots
+            .values()
+            .filter(|s| !out.iter().any(|g| g.id == s.id || g.members.contains(&s.id)))
+            .collect();
+        rest.sort_by(|a, b| a.id.cmp(&b.id));
+        out.extend(rest.into_iter().map(|s| Group { id: s.id.clone(), name: s.name.clone(), members: vec![s.id.clone()] }));
+        out
+    }
+
+    pub fn group(&self, id: &str) -> Option<Group> {
+        self.groups().into_iter().find(|g| g.id == id)
     }
 
     fn pack_path(&self, id: &str) -> PathBuf {
@@ -316,6 +377,17 @@ mod tests {
         lib.remove("cs-grc").unwrap();
         assert!(!dir.join("cs-grc.csd").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn groups_cover_every_dictionary_once() {
+        let lib = Library::new(std::env::temp_dir().join("csdict-test-no-such-dir"));
+        let groups = lib.groups();
+        assert_eq!(groups[0].members, ["cs-en", "en-cs", "en-wn"]);
+        for id in lib.slots.keys() {
+            assert_eq!(groups.iter().filter(|g| g.members.contains(id)).count(), 1, "{id}");
+        }
+        assert!(is_grouped_member("en-cs") && !is_grouped_member("cs-en") && !is_grouped_member("xx-yy"));
     }
 
     #[test]

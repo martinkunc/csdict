@@ -5,6 +5,7 @@ pub mod kaikki;
 pub mod model;
 pub mod normalize;
 pub mod pack;
+pub mod wordnet;
 
 pub use model::{DictMeta, Entry, Example, Form, Sense};
 pub use pack::{Dictionary, Hit, MatchKind, PackBuilder};

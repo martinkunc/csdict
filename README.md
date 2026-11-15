@@ -1,19 +1,26 @@
 # csdict
 
 A fast, cross-platform (Windows / Linux / macOS) dictionary written in Rust
-with [egui](https://github.com/emilk/egui). Czech ↔ English, Czech ↔ German,
-Czech ↔ Ancient Greek, German → English, Ancient Greek → English.
+with [egui](https://github.com/emilk/egui). Czech ↔ English (plus English
+definitions from WordNet), Czech ↔ German, Czech ↔ Ancient Greek,
+German → English, Ancient Greek → English.
 
 * Borderless window: a large search box replaces the title bar; window buttons
   are drawn on the platform's side (left on macOS and on Linux desktops
   configured that way, right otherwise).
 * **D** menu (top-left): choose dictionaries (checkbox), set their order,
-  download / remove them, toggle online lookup, dark mode.
+  download / remove them, toggle online lookup, theme (same as system by
+  default, or light / dark).
+* Both directions of a language pair are one dictionary: *Czech ↔ English*
+  looks a word up in Czech → English, English → Czech and the English
+  WordNet at once. Each entry is labelled with its direction and source
+  (e.g. `English → Czech · GNU/FDL`, `English definitions · WordNet`).
 * Left: matching words (exact, inflected form → lemma, prefix), then
   *similar words* (typo-tolerant). Typing without diacritics works
   (`zlutou` → `žlutý`, `logos` → `λόγος`).
-* Right: one tab per selected dictionary, in the chosen order. Dictionaries
-  that are not downloaded are looked up online (kaikki.org / Wiktionary).
+* Right: one tab per selected dictionary, in the chosen order. Parts that
+  are not downloaded are looked up online (kaikki.org for Wiktionary,
+  en-word.net for WordNet).
   Online lookups are throttled: 500 ms after the word last changed, only for
   the word on screen (stale queued lookups are dropped), at most a burst of 4
   then ~1.5 requests/s with 2 in flight, a pause on HTTP 429/503 (honouring
@@ -59,7 +66,7 @@ or `mpv`). Windows and macOS use built-in tools (PowerShell / `afplay`, `say`).
 ## Building the dictionary packs
 
 ```sh
-mkdir -p data/raw/{kaikki-cs,kaikki-de,kaikki-grc,kaikki-en,slovnik}
+mkdir -p data/raw/{kaikki-cs,kaikki-de,kaikki-grc,kaikki-en,slovnik,wordnet}
 curl -L -o data/raw/kaikki-cs/kaikki.org-dictionary-Czech.jsonl \
   https://kaikki.org/dictionary/Czech/kaikki.org-dictionary-Czech.jsonl
 curl -L -o data/raw/kaikki-de/kaikki.org-dictionary-German.jsonl.gz \
@@ -68,6 +75,9 @@ curl -L -o data/raw/kaikki-grc/kaikki.org-dictionary-AncientGreek.jsonl.gz \
   "https://kaikki.org/dictionary/Ancient%20Greek/kaikki.org-dictionary-AncientGreek.jsonl.gz"
 curl -L -o data/raw/kaikki-en/kaikki.org-dictionary-English.jsonl.gz \
   https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl.gz   # 530 MB
+mkdir -p data/raw/wordnet && (cd data/raw/wordnet && \
+  curl -L -O https://github.com/globalwordnet/english-wordnet/releases/download/2025-edition/english-wordnet-2025-json.zip && \
+  unzip -o english-wordnet-2025-json.zip -d json)
 (cd data/raw/slovnik && \
   curl -L https://dl.cihar.com/slovnik/stardict-english-czech-latest-source.tar.gz | tar xz && \
   curl -L https://dl.cihar.com/slovnik/stardict-german-czech-latest-source.tar.gz | tar xz)
@@ -82,6 +92,7 @@ Takes about a minute and ~2 GB RAM. Result (2026-11):
 |--------|--------:|--------:|---------|
 | cs-en  | 149 781 | 14.4 MB | Wiktionary + GNU/FDL (reversed) |
 | en-cs  | 137 369 | 11.5 MB | Wiktionary translations + GNU/FDL |
+| en-wn  | 135 906 | 17.0 MB | Open English WordNet 2025 (definitions) |
 | de-en  | 113 264 | 27.4 MB | Wiktionary |
 | grc-en |  30 359 | 10.3 MB | Wiktionary |
 | de-cs  |  51 828 |  9.0 MB | GNU/FDL + Wiktionary via English |
@@ -123,7 +134,7 @@ Developer aid: `cargo run -p dict-app --features screenshot` with
   „Založeno na svobodném anglicko-českém slovníku,
   https://www.svobodneslovniky.cz/“.
 
-WordNet is not used for translations: it is monolingual, and the Czech
-WordNet is small (~28k synsets) and licensed for non-commercial use only.
-Open English WordNet (CC BY 4.0) could be added later as an English
-definitions dictionary.
+* Open English WordNet – CC BY 4.0, https://en-word.net (based on Princeton
+  WordNet 3.0). Used as an English definitions dictionary (English has no
+  Czech translations in WordNet; the Czech WordNet is licensed for
+  non-commercial use only and is not used).

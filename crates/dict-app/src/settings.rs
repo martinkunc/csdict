@@ -1,9 +1,30 @@
-//! Persistent user settings (dictionary order / selection, catalog URL).
+//! Persistent user settings (dictionary order / selection, catalog URL, theme).
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Follow the operating system's light / dark setting.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl From<Theme> for egui::ThemePreference {
+    fn from(t: Theme) -> Self {
+        match t {
+            Theme::System => egui::ThemePreference::System,
+            Theme::Light => egui::ThemePreference::Light,
+            Theme::Dark => egui::ThemePreference::Dark,
+        }
+    }
+}
+
+/// One entry of the dictionary menu: a group id (see [`crate::library::GROUPS`]).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DictSetting {
     pub id: String,
@@ -13,13 +34,13 @@ pub struct DictSetting {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Dictionaries in display order.
+    /// Dictionary groups in display order.
     pub dictionaries: Vec<DictSetting>,
     /// Where to get `catalog.json` (http(s) URL or local path).
     pub catalog: String,
     /// Look up words online in dictionaries that are not downloaded.
     pub online: bool,
-    pub dark_mode: bool,
+    pub theme: Theme,
 }
 
 /// Default catalog location (set once the packs are hosted, e.g. on GitHub
@@ -28,15 +49,14 @@ pub const DEFAULT_CATALOG: &str = "";
 
 impl Default for Settings {
     fn default() -> Self {
-        let enabled = ["cs-en", "en-cs"];
         Settings {
-            dictionaries: crate::library::BUILTIN
+            dictionaries: crate::library::GROUPS
                 .iter()
-                .map(|(id, ..)| DictSetting { id: (*id).to_owned(), enabled: enabled.contains(id) })
+                .map(|(id, ..)| DictSetting { id: (*id).to_owned(), enabled: *id == "cs-en" })
                 .collect(),
             catalog: DEFAULT_CATALOG.to_owned(),
             online: true,
-            dark_mode: false,
+            theme: Theme::System,
         }
     }
 }
@@ -76,8 +96,10 @@ impl Dirs {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        // Make sure every built-in dictionary is listed.
-        for (id, ..) in crate::library::BUILTIN {
+        // Single directions that are now part of a group (settings from
+        // before grouping) are dropped; every built-in group is listed.
+        s.dictionaries.retain(|d| !crate::library::is_grouped_member(&d.id));
+        for (id, ..) in crate::library::GROUPS {
             if !s.dictionaries.iter().any(|d| d.id == *id) {
                 s.dictionaries.push(DictSetting { id: (*id).to_owned(), enabled: false });
             }

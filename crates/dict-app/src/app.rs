@@ -11,15 +11,25 @@ use egui::{
     ResizeDirection, RichText, Sense, Stroke, TextEdit, Vec2, ViewportCommand, pos2, vec2,
 };
 
-use crate::library::{CatalogState, Download, Library};
-use crate::online::{DEBOUNCE, Online, OnlineResult};
-use crate::settings::{DictSetting, Dirs, Settings};
+use crate::library::{CatalogState, Download, Group, Library, Slot};
+use crate::online::{self, DEBOUNCE, Online, OnlineResult};
+use crate::settings::{DictSetting, Dirs, Settings, Theme};
 use crate::speech;
 
 const TITLE_BAR_HEIGHT: f32 = 56.0;
 const RESIZE_MARGIN: f32 = 5.0;
 const LIST_LIMIT: usize = 60;
 const ACCENT: Color32 = Color32::from_rgb(0x2f, 0x6f, 0xd6);
+
+/// Entries of one dictionary of the shown group.
+struct Part {
+    /// Direction and source shown next to each entry.
+    label: String,
+    /// Language of the headwords (for pronunciation).
+    lang: String,
+    online: bool,
+    entries: Arc<Vec<Entry>>,
+}
 
 /// One word in the result list (merged over all selected dictionaries).
 struct ListItem {
@@ -41,7 +51,9 @@ enum ButtonSide {
 enum MenuAction {
     Toggle(usize),
     Move(usize, isize),
+    /// Download every missing dictionary of a group.
     Download(String),
+    /// Remove every downloaded dictionary of a group.
     Remove(String),
     ReloadCatalog,
 }
@@ -58,6 +70,7 @@ pub struct App {
     selected: Option<usize>,
     /// Word shown in the result pane (list selection or typed text).
     word: String,
+    /// Group id of the shown tab.
     active_tab: Option<String>,
     entry_cache: HashMap<(String, String), Arc<Vec<Entry>>>,
     dirty: bool,
@@ -69,11 +82,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    /// `query`: word to look up at start (`csdict <word>`).
+    pub fn new(cc: &eframe::CreationContext<'_>, query: Option<String>) -> Self {
         let dirs = Dirs::new();
         let settings = dirs.load_settings();
         let lib = Library::new(dirs.dicts.clone());
-        apply_style(&cc.egui_ctx, settings.dark_mode);
+        apply_style(&cc.egui_ctx, settings.theme);
         let catalog_edit = settings.catalog.clone();
         let app = App {
             dirs,
@@ -93,9 +107,8 @@ impl App {
             catalog_edit,
             settings,
         };
-        // `csdict <word>` starts with a lookup.
         let mut app = app;
-        if let Some(q) = std::env::args().nth(1) {
+        if let Some(q) = query {
             app.query = q;
             app.dirty = true;
         }
@@ -105,8 +118,24 @@ impl App {
         app
     }
 
-    fn enabled(&self) -> impl Iterator<Item = &DictSetting> {
-        self.settings.dictionaries.iter().filter(|d| d.enabled && self.lib.slots.contains_key(&d.id))
+    /// Selected dictionary groups in menu order.
+    fn enabled_groups(&self) -> Vec<Group> {
+        let groups = self.lib.groups();
+        self.settings
+            .dictionaries
+            .iter()
+            .filter(|d| d.enabled)
+            .filter_map(|d| groups.iter().find(|g| g.id == d.id).cloned())
+            .collect()
+    }
+
+    /// List every group in the menu (new catalog dictionaries appear unselected).
+    fn sync_group_settings(&mut self) {
+        for g in self.lib.groups() {
+            if !self.settings.dictionaries.iter().any(|d| d.id == g.id) {
+                self.settings.dictionaries.push(DictSetting { id: g.id, enabled: false });
+            }
+        }
     }
 
     fn save(&self) {
@@ -121,8 +150,9 @@ impl App {
         let q = self.query.trim().to_owned();
         let mut merged: HashMap<String, ListItem> = HashMap::new();
         if !q.is_empty() {
-            for d in self.enabled() {
-                let Some(dict) = self.lib.slots.get(&d.id).and_then(|s| s.dict.as_ref()) else { continue };
+            let members: Vec<String> = self.enabled_groups().into_iter().flat_map(|g| g.members).collect();
+            for id in &members {
+                let Some(dict) = self.lib.slots.get(id).and_then(|s| s.dict.as_ref()) else { continue };
                 for h in dict.search(&q, LIST_LIMIT) {
                     let it = merged.entry(h.headword.clone()).or_insert_with(|| ListItem {
                         word: h.headword.clone(),
@@ -169,26 +199,61 @@ impl App {
         }
     }
 
-    /// Keep the current tab if it has results, otherwise switch to the first
-    /// downloaded dictionary that has the word.
+    /// Keep the current tab if it may have results, otherwise switch to the
+    /// first group whose downloaded dictionaries have the word.
     fn pick_tab(&mut self) {
-        let ids: Vec<String> = self.enabled().map(|d| d.id.clone()).collect();
-        if ids.is_empty() {
+        let groups = self.enabled_groups();
+        if groups.is_empty() {
             self.active_tab = None;
             return;
         }
-        let cur = self.active_tab.clone().filter(|t| ids.contains(t));
-        if let Some(t) = &cur
-            && (!self.is_downloaded(t) || !self.offline_entries(t).is_empty())
+        let cur = self.active_tab.clone().filter(|t| groups.iter().any(|g| &g.id == t));
+        if let Some(g) = cur.as_ref().and_then(|t| groups.iter().find(|g| &g.id == t))
+            && (g.members.iter().any(|m| !self.is_downloaded(m)) || self.offline_count(g) > 0)
         {
             return;
         }
-        let first_hit = ids.iter().find(|id| self.is_downloaded(id) && !self.offline_entries(id).is_empty());
-        self.active_tab = first_hit.cloned().or(cur).or_else(|| ids.first().cloned());
+        let first_hit = groups.iter().find(|g| self.offline_count(g) > 0).map(|g| g.id.clone());
+        self.active_tab = first_hit.or(cur).or_else(|| Some(groups[0].id.clone()));
     }
 
     fn is_downloaded(&self, id: &str) -> bool {
         self.lib.slots.get(id).is_some_and(|s| s.is_downloaded())
+    }
+
+    /// Entries for the word in the downloaded dictionaries of a group.
+    fn offline_count(&mut self, g: &Group) -> usize {
+        let mut n = 0;
+        for m in &g.members {
+            if self.is_downloaded(m) {
+                n += self.offline_entries(m).len();
+            }
+        }
+        n
+    }
+
+    /// Entries known so far for the word in a group, and whether more may
+    /// still come from online lookups.
+    fn group_count(&mut self, g: &Group) -> (Option<usize>, bool) {
+        let (mut known, mut pending) = (None, false);
+        for m in &g.members {
+            let n = if self.is_downloaded(m) {
+                Some(self.offline_entries(m).len())
+            } else {
+                match self.online.get(m, &self.word) {
+                    Some(OnlineResult::Done(e)) => Some(e.len()),
+                    Some(OnlineResult::Failed(_)) => None,
+                    _ => {
+                        pending |= self.settings.online;
+                        None
+                    }
+                }
+            };
+            if let Some(n) = n {
+                known = Some(known.unwrap_or(0) + n);
+            }
+        }
+        (known, pending)
     }
 
     fn offline_entries(&mut self, id: &str) -> Arc<Vec<Entry>> {
@@ -252,9 +317,12 @@ impl App {
                     i.consume_key(Modifiers::NONE, Key::Escape),
                 )
             });
+            // The hint does not inherit `.font()`: give it the same size, and
+            // centre both vertically (default alignment is top).
             let edit = TextEdit::singleline(&mut self.query)
                 .font(FontId::proportional(24.0))
-                .hint_text("Type a word…")
+                .hint_text(RichText::new("Type a word…").size(24.0))
+                .align(Align2::LEFT_CENTER)
                 .margin(vec2(12.0, 8.0))
                 .desired_width(w)
                 .id_salt("search");
@@ -284,8 +352,10 @@ impl App {
                 if self.results.is_empty() {
                     self.word = self.query.trim().to_owned();
                 }
-                if let Some(tab) = &self.active_tab {
-                    self.online.retry(tab, &self.word);
+                if let Some(g) = self.active_tab.as_ref().and_then(|t| self.lib.group(t)) {
+                    for m in &g.members {
+                        self.online.retry(m, &self.word);
+                    }
                 }
                 resp.request_focus();
             }
@@ -303,6 +373,7 @@ impl App {
         let fill = if resp.hovered() { ACCENT.gamma_multiply(0.85) } else { ACCENT };
         ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, "D", FontId::proportional(24.0), Color32::WHITE);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Dictionaries"));
         let resp = resp.on_hover_text("Dictionaries");
 
         let mut actions = Vec::new();
@@ -319,15 +390,12 @@ impl App {
                 ui.add_space(4.0);
                 egui::Grid::new("dict_grid").num_columns(3).spacing([12.0, 6.0]).striped(true).show(ui, |ui| {
                     let n = self.settings.dictionaries.len();
+                    let groups = self.lib.groups();
                     for (i, d) in self.settings.dictionaries.iter().enumerate() {
-                        let Some(slot) = self.lib.slots.get(&d.id) else { continue };
+                        let Some(g) = groups.iter().find(|g| g.id == d.id) else { continue };
+                        let slots: Vec<&Slot> = g.members.iter().filter_map(|m| self.lib.slots.get(m)).collect();
                         let mut on = d.enabled;
-                        let entries = slot.dict.as_ref().map(|x| x.len()).or(slot.remote.as_ref().map(|r| r.meta.entries as usize));
-                        let tip = match entries {
-                            Some(n) => format!("{} entries", n),
-                            None => "not in catalog".to_owned(),
-                        };
-                        if ui.checkbox(&mut on, &slot.name).on_hover_text(tip).changed() {
+                        if ui.checkbox(&mut on, &g.name).on_hover_text(group_tooltip(&slots)).changed() {
                             actions.push(MenuAction::Toggle(i));
                         }
                         ui.horizontal(|ui| {
@@ -343,32 +411,38 @@ impl App {
                             }
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let dl = slot.download.as_ref().map(|d| d.lock().unwrap().clone());
-                            match (&dl, slot.is_downloaded()) {
-                                (Some(Download::Running { done, total }), _) => {
-                                    let f = if *total > 0 { *done as f32 / *total as f32 } else { 0.0 };
-                                    ui.add(egui::ProgressBar::new(f).desired_width(140.0).show_percentage());
-                                }
-                                (_, true) => {
-                                    if ui.button("Remove").on_hover_text("Delete the downloaded dictionary").clicked() {
-                                        actions.push(MenuAction::Remove(d.id.clone()));
-                                    }
-                                    ui.label(RichText::new("Downloaded").color(Color32::from_rgb(0x2e, 0x9e, 0x4f)));
-                                }
-                                (dl, false) => {
-                                    if let Some(item) = &slot.remote {
-                                        let label = format!("⬇ Download {:.1} MB", item.size as f64 / 1e6);
-                                        if ui.button(label).clicked() {
-                                            actions.push(MenuAction::Download(d.id.clone()));
-                                        }
-                                    }
-                                    if let Some(Download::Failed(e)) = dl {
-                                        ui.label(RichText::new("failed").color(Color32::RED)).on_hover_text(e);
-                                    } else {
-                                        ui.label(RichText::new("online").weak())
-                                            .on_hover_text("Not downloaded – words are looked up on kaikki.org (Wiktionary)");
-                                    }
-                                }
+                            let downloads = download_states(&slots);
+                            if let Some(f) = download_progress(&downloads) {
+                                ui.add(egui::ProgressBar::new(f).desired_width(140.0).show_percentage());
+                                return;
+                            }
+                            let have = slots.iter().filter(|s| s.is_downloaded()).count();
+                            let missing: u64 = slots
+                                .iter()
+                                .filter(|s| !s.is_downloaded())
+                                .filter_map(|s| s.remote.as_ref().map(|r| r.size))
+                                .sum();
+                            if have > 0 && ui.button("Remove").on_hover_text("Delete the downloaded dictionaries").clicked() {
+                                actions.push(MenuAction::Remove(g.id.clone()));
+                            }
+                            if missing > 0 && ui.button(format!("⬇ Download {:.1} MB", missing as f64 / 1e6)).clicked() {
+                                actions.push(MenuAction::Download(g.id.clone()));
+                            }
+                            let failed: Vec<&str> = downloads
+                                .iter()
+                                .filter_map(|d| if let Download::Failed(e) = d { Some(e.as_str()) } else { None })
+                                .collect();
+                            if !failed.is_empty() {
+                                ui.label(RichText::new("failed").color(Color32::RED)).on_hover_text(failed.join("\n"));
+                            } else if have == slots.len() {
+                                ui.label(RichText::new("Downloaded").color(Color32::from_rgb(0x2e, 0x9e, 0x4f)));
+                            } else if have > 0 {
+                                ui.label(RichText::new(format!("{have}/{} downloaded", slots.len())))
+                                    .on_hover_text("The rest is looked up online");
+                            } else {
+                                ui.label(RichText::new("online").weak()).on_hover_text(
+                                    "Not downloaded – words are looked up on kaikki.org (Wiktionary) and en-word.net (WordNet)",
+                                );
                             }
                         });
                         ui.end_row();
@@ -378,10 +452,17 @@ impl App {
                 if ui.checkbox(&mut self.settings.online, "Look up online in dictionaries that are not downloaded").changed() {
                     self.save();
                 }
-                if ui.checkbox(&mut self.settings.dark_mode, "Dark mode").changed() {
-                    apply_style(ui.ctx(), self.settings.dark_mode);
-                    self.save();
-                }
+                ui.horizontal(|ui| {
+                    ui.label("Theme:");
+                    let mut changed = false;
+                    for (t, name) in [(Theme::System, "Same as system"), (Theme::Light, "Light"), (Theme::Dark, "Dark")] {
+                        changed |= ui.selectable_value(&mut self.settings.theme, t, name).changed();
+                    }
+                    if changed {
+                        apply_style(ui.ctx(), self.settings.theme);
+                        self.save();
+                    }
+                });
                 ui.horizontal(|ui| {
                     ui.label("Catalog:");
                     let r = ui.add(
@@ -419,6 +500,7 @@ impl App {
                 ui.collapsing("Sources & licenses", |ui| {
                     ui.label("Wiktionary content (CC BY-SA 4.0) via wiktextract / kaikki.org.");
                     ui.label("Založeno na svobodném anglicko-českém slovníku, https://www.svobodneslovniky.cz/ (GNU FDL).");
+                    ui.label("Open English WordNet (CC BY 4.0), https://en-word.net/.");
                     ui.label(format!("Dictionaries are stored in {}", self.dirs.dicts.display()));
                 });
             });
@@ -433,11 +515,13 @@ impl App {
                     let j = (i as isize + d) as usize;
                     self.settings.dictionaries.swap(i, j);
                 }
-                MenuAction::Download(id) => self.lib.start_download(&id, ui.ctx().clone()),
-                MenuAction::Remove(id) => {
+                MenuAction::Download(gid) => self.download_group(&gid, ui.ctx()),
+                MenuAction::Remove(gid) => {
                     self.entry_cache.clear();
-                    if let Err(e) = self.lib.remove(&id) {
-                        *self.message.lock().unwrap() = Some(format!("{e:#}"));
+                    for id in self.lib.group(&gid).map(|g| g.members).unwrap_or_default() {
+                        if let Err(e) = self.lib.remove(&id) {
+                            *self.message.lock().unwrap() = Some(format!("{e:#}"));
+                        }
                     }
                     self.dirty = true;
                 }
@@ -461,7 +545,7 @@ impl App {
                 ui.add_space(8.0);
                 let msg = if self.query.trim().is_empty() {
                     "Start typing to search."
-                } else if !self.enabled().any(|d| self.is_downloaded(&d.id)) {
+                } else if !self.enabled_groups().iter().flat_map(|g| &g.members).any(|m| self.is_downloaded(m)) {
                     "No downloaded dictionary selected – results are looked up online."
                 } else {
                     "No matches."
@@ -502,124 +586,152 @@ impl App {
     // ---------------------------------------------------------- result pane
 
     fn result_pane(&mut self, ui: &mut egui::Ui) {
-        let tabs: Vec<(String, String, String, bool)> = self
-            .enabled()
-            .filter_map(|d| self.lib.slots.get(&d.id))
-            .map(|s| (s.id.clone(), s.name.clone(), s.source_lang.clone(), s.is_downloaded()))
-            .collect();
+        let tabs = self.enabled_groups();
         if tabs.is_empty() {
             ui.add_space(20.0);
             ui.label("No dictionary selected. Open the D menu in the top-left corner to choose dictionaries.");
             return;
         }
-        if self.active_tab.as_ref().is_none_or(|t| !tabs.iter().any(|x| &x.0 == t)) {
-            self.active_tab = Some(tabs[0].0.clone());
+        if self.active_tab.as_ref().is_none_or(|t| !tabs.iter().any(|g| &g.id == t)) {
+            self.active_tab = Some(tabs[0].id.clone());
         }
 
-        // Tab bar.
+        // Tab bar: one tab per group, with the number of entries found.
         ui.horizontal_wrapped(|ui| {
-            for (id, name, _, downloaded) in &tabs {
-                let count = if self.word.is_empty() {
-                    None
-                } else if *downloaded {
-                    Some(self.offline_entries(id).len())
-                } else {
-                    match self.online.get(id, &self.word) {
-                        Some(OnlineResult::Done(e)) => Some(e.len()),
-                        _ => None,
-                    }
-                };
-                let mut label = name.clone();
-                if !*downloaded {
+            for g in &tabs {
+                let (count, pending) = if self.word.is_empty() { (None, false) } else { self.group_count(g) };
+                let mut label = g.name.clone();
+                if !g.members.iter().any(|m| self.is_downloaded(m)) {
                     label.push_str(" · online");
                 }
                 if let Some(n) = count {
-                    label.push_str(&format!("  {n}"));
+                    label.push_str(&format!("  {n}{}", if pending { "…" } else { "" }));
                 }
-                let active = self.active_tab.as_deref() == Some(id.as_str());
+                let active = self.active_tab.as_deref() == Some(g.id.as_str());
                 let mut text = RichText::new(label).size(14.0);
-                if count == Some(0) && !active {
+                if count == Some(0) && !pending && !active {
                     text = text.weak();
                 }
-                let tip = if *downloaded { "Downloaded dictionary" } else { "Looked up online (not downloaded)" };
-                if ui.add(egui::Button::selectable(active, text)).on_hover_text(tip).clicked() {
-                    self.active_tab = Some(id.clone());
+                let tip: Vec<String> = g
+                    .members
+                    .iter()
+                    .filter_map(|m| self.lib.slots.get(m))
+                    .map(|s| format!("{} ({})", s.name, if s.is_downloaded() { "downloaded" } else { "online" }))
+                    .collect();
+                if ui.add(egui::Button::selectable(active, text)).on_hover_text(tip.join("\n")).clicked() {
+                    self.active_tab = Some(g.id.clone());
                 }
             }
         });
         ui.separator();
 
-        let Some(tab) = self.active_tab.clone() else { return };
-        let (_, _, src_lang, downloaded) = tabs.iter().find(|t| t.0 == tab).cloned().unwrap();
+        let Some(group) = self.active_tab.as_ref().and_then(|t| tabs.iter().find(|g| &g.id == t)).cloned() else {
+            return;
+        };
+        self.offline_only_hint(ui, &group);
         if self.word.is_empty() {
             return;
         }
+        let word = self.word.clone();
 
-        let entries: Arc<Vec<Entry>> = if downloaded {
-            self.offline_entries(&tab)
-        } else if !self.settings.online {
-            ui.label(RichText::new("This dictionary is not downloaded and online lookup is turned off.").weak());
-            return;
-        } else {
-            let slot = &self.lib.slots[&tab];
-            match self.online.get(&tab, &self.word) {
-                Some(OnlineResult::Done(e)) => Arc::new(e.clone()),
-                Some(OnlineResult::Pending) => {
-                    let blocked = self.online.blocked_for();
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        match blocked {
-                            Some(d) => ui.label(format!(
-                                "Server asked to slow down – waiting {} s before looking up “{}”…",
-                                d.as_secs() + 1,
-                                self.word
-                            )),
-                            None => ui.label(format!("Looking up “{}” online…", self.word)),
-                        };
-                    });
-                    if blocked.is_some() {
-                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-                    }
-                    return;
-                }
-                Some(OnlineResult::Failed(e)) => {
-                    ui.label(RichText::new(format!("Online lookup failed: {e}")).color(Color32::RED));
-                    ui.label(RichText::new("Press Enter to try again.").weak());
-                    return;
-                }
-                None => {
-                    let wait = DEBOUNCE.saturating_sub(self.last_edit.elapsed());
-                    if wait.is_zero() {
+        // Dictionaries that are not downloaded are looked up online once the
+        // word has stopped changing.
+        if self.settings.online {
+            let missing: Vec<String> = group
+                .members
+                .iter()
+                .filter(|m| !self.is_downloaded(m) && self.online.get(m, &word).is_none())
+                .cloned()
+                .collect();
+            if !missing.is_empty() {
+                let wait = DEBOUNCE.saturating_sub(self.last_edit.elapsed());
+                if wait.is_zero() {
+                    for m in &missing {
+                        let slot = &self.lib.slots[m];
                         let (s, t) = (slot.source_lang.clone(), slot.target_lang.clone());
-                        self.online.request(&tab, &s, &t, &self.word.clone(), ui.ctx());
-                    } else {
-                        self.online.clear_wanted();
-                        ui.ctx().request_repaint_after(wait);
+                        self.online.request(m, &s, &t, &word, ui.ctx());
                     }
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Waiting…");
-                    });
-                    return;
+                } else {
+                    self.online.clear_wanted();
+                    ui.ctx().request_repaint_after(wait);
                 }
             }
-        };
+        }
 
-        if entries.is_empty() {
-            ui.add_space(8.0);
-            ui.label(RichText::new(format!("“{}” was not found in this dictionary.", self.word)).weak());
+        // Collect entries of every dictionary of the group.
+        let (mut parts, mut pending, mut failed, mut off) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for m in &group.members {
+            let Some(slot) = self.lib.slots.get(m) else { continue };
+            let (dir, lang) = (slot.direction(), slot.source_lang.clone());
+            if slot.is_downloaded() {
+                let entries = self.offline_entries(m);
+                parts.push(Part { label: dir, lang, online: false, entries });
+            } else if !self.settings.online {
+                off.push(slot.name.clone());
+            } else {
+                match self.online.get(m, &word) {
+                    Some(OnlineResult::Done(e)) => parts.push(Part { label: dir, lang, online: true, entries: e.clone() }),
+                    Some(OnlineResult::Failed(e)) => failed.push(format!("{dir}: {e}")),
+                    Some(OnlineResult::Pending) | None => pending.push(dir),
+                }
+            }
+        }
+        let found: usize = parts.iter().map(|p| p.entries.len()).sum();
+
+        if !pending.is_empty() {
+            let blocked = self.online.blocked_for();
+            ui.horizontal(|ui| {
+                ui.spinner();
+                match blocked {
+                    Some(d) => ui.label(format!(
+                        "Server asked to slow down – waiting {} s before looking up “{word}”…",
+                        d.as_secs() + 1
+                    )),
+                    None => ui.label(format!("Looking up “{word}” online ({})…", pending.join(", "))),
+                };
+            });
+            if blocked.is_some() {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+            }
+        }
+        for f in &failed {
+            ui.label(RichText::new(format!("Online lookup failed – {f}")).color(Color32::RED));
+        }
+        if !failed.is_empty() {
+            ui.label(RichText::new("Press Enter to try again.").weak());
+        }
+        if found == 0 {
+            if pending.is_empty() {
+                ui.add_space(8.0);
+                if parts.is_empty() && failed.is_empty() {
+                    ui.label(RichText::new("These dictionaries are not downloaded and online lookup is turned off.").weak());
+                } else if failed.is_empty() {
+                    ui.label(RichText::new(format!("“{word}” was not found in {}.", group.name)).weak());
+                }
+            }
             return;
+        }
+        if !off.is_empty() {
+            ui.label(RichText::new(format!("Not downloaded, online lookup is off: {}", off.join(", "))).weak());
         }
 
         let mut lookup = None;
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            for (i, e) in entries.iter().enumerate() {
-                if i > 0 {
-                    ui.add_space(6.0);
-                    ui.separator();
-                }
-                if let Some(w) = self.render_entry(ui, e, &src_lang) {
-                    lookup = Some(w);
+            let mut first = true;
+            for p in &parts {
+                for e in p.entries.iter() {
+                    if !first {
+                        ui.add_space(6.0);
+                        ui.separator();
+                    }
+                    first = false;
+                    let mut label = format!("{} · {}", p.label, e.source);
+                    if p.online {
+                        label.push_str(" · online");
+                    }
+                    if let Some(w) = self.render_entry(ui, e, &p.lang, &label) {
+                        lookup = Some(w);
+                    }
                 }
             }
         });
@@ -631,7 +743,108 @@ impl App {
     }
 
     /// Render one entry; returns a word the user asked to look up.
-    fn render_entry(&self, ui: &mut egui::Ui, e: &Entry, lang: &str) -> Option<String> {
+    /// Status bar at the bottom of the window while dictionaries download:
+    /// one line per dictionary group with its combined progress.
+    fn download_status(&self, ui: &mut egui::Ui) {
+        let running: Vec<(String, u64, u64)> = self
+            .lib
+            .groups()
+            .into_iter()
+            .filter_map(|g| {
+                let slots: Vec<&Slot> = g.members.iter().filter_map(|m| self.lib.slots.get(m)).collect();
+                download_bytes(&download_states(&slots)).map(|(d, t)| (g.name, d, t))
+            })
+            .collect();
+        if running.is_empty() {
+            return;
+        }
+        egui::Panel::bottom("downloads").show(ui, |ui| {
+            ui.add_space(2.0);
+            for (name, done, total) in &running {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Downloading {name}…"));
+                    let f = if *total > 0 { *done as f32 / *total as f32 } else { 0.0 };
+                    let text = format!("{:.1} / {:.1} MB", *done as f64 / 1e6, *total as f64 / 1e6);
+                    ui.add(egui::ProgressBar::new(f).desired_width(260.0).text(text));
+                });
+            }
+            ui.add_space(2.0);
+        });
+    }
+
+    /// Start downloading every dictionary of a group that is not downloaded yet.
+    fn download_group(&mut self, gid: &str, ctx: &egui::Context) {
+        for id in self.lib.group(gid).map(|g| g.members).unwrap_or_default() {
+            let slot = &self.lib.slots[&id];
+            let busy = slot.download.as_ref().is_some_and(|d| matches!(*d.lock().unwrap(), Download::Running { .. }));
+            if !slot.is_downloaded() && slot.remote.is_some() && !busy {
+                self.lib.start_download(&id, ctx.clone());
+            }
+        }
+    }
+
+    /// Hint above the results when a dictionary of the group is not
+    /// downloaded and contains sources that cannot be looked up online
+    /// (e.g. the GNU/FDL slovník), with a button to download the group.
+    fn offline_only_hint(&mut self, ui: &mut egui::Ui, g: &Group) {
+        // source → directions in which it is missing
+        let mut missing: Vec<(String, Vec<String>)> = Vec::new();
+        let mut size = 0u64;
+        let slots: Vec<&Slot> = g.members.iter().filter_map(|m| self.lib.slots.get(m)).collect();
+        for s in slots.iter().filter(|s| !s.is_downloaded()) {
+            let Some(remote) = &s.remote else { continue };
+            size += remote.size;
+            for src in remote.meta.sources.split(", ").filter(|x| !x.is_empty() && !online::available_online(x)) {
+                match missing.iter_mut().find(|(x, _)| x == src) {
+                    Some((_, dirs)) => dirs.push(s.direction()),
+                    None => missing.push((src.to_owned(), vec![s.direction()])),
+                }
+            }
+        }
+        if missing.is_empty() {
+            return;
+        }
+        let downloads = download_states(&slots);
+        let mut start = false;
+        egui::Frame::new()
+            .fill(Color32::from_rgb(0xe0, 0x9a, 0x20).gamma_multiply(0.16))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    let what: Vec<String> = missing.iter().map(|(s, d)| format!("{s} ({})", d.join(", "))).collect();
+                    ui.label(format!(
+                        "{} cannot be looked up online, so {} translations are not shown until the dictionary is downloaded.",
+                        what.join(" and "),
+                        if missing.len() > 1 { "their" } else { "its" },
+                    ));
+                    if let Some(f) = download_progress(&downloads) {
+                        ui.add(egui::ProgressBar::new(f).desired_width(160.0).show_percentage());
+                        return;
+                    }
+                    let failed: Vec<&str> = downloads
+                        .iter()
+                        .filter_map(|d| if let Download::Failed(e) = d { Some(e.as_str()) } else { None })
+                        .collect();
+                    if !failed.is_empty() {
+                        ui.label(RichText::new("Download failed").color(Color32::RED)).on_hover_text(failed.join("\n"));
+                    }
+                    let label = format!("⬇ Download {} ({:.1} MB)", g.name, size as f64 / 1e6);
+                    if ui.button(label).on_hover_text("Download the complete dictionary for offline use").clicked() {
+                        start = true;
+                    }
+                });
+            });
+        ui.add_space(4.0);
+        if start {
+            self.download_group(&g.id, ui.ctx());
+        }
+    }
+
+    /// `label` names the dictionary direction and source of the entry.
+    fn render_entry(&self, ui: &mut egui::Ui, e: &Entry, lang: &str, label: &str) -> Option<String> {
         let mut lookup = None;
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
@@ -664,7 +877,11 @@ impl App {
                 ui.ctx().copy_text(entry_text(e));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(&e.source).small().weak());
+                egui::Frame::new()
+                    .fill(ACCENT.gamma_multiply(0.14))
+                    .corner_radius(CornerRadius::same(4))
+                    .inner_margin(egui::Margin::symmetric(6, 2))
+                    .show(ui, |ui| ui.label(RichText::new(label).small().color(ACCENT)));
             });
         });
         for g in e.grammar.iter().filter(|g| g.chars().count() > 24) {
@@ -715,7 +932,7 @@ impl App {
         if let Some(et) = &e.etymology {
             ui.add_space(4.0);
             egui::CollapsingHeader::new(RichText::new("Etymology").weak())
-                .id_salt(("ety", &e.headword, &e.pos, &e.source))
+                .id_salt(("ety", &e.headword, &e.pos, label))
                 .show(ui, |ui| {
                     ui.label(et);
                 });
@@ -781,6 +998,43 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon) -> egui::Response {
     r
 }
 
+/// Download states of the given dictionaries (those with a download).
+fn download_states(slots: &[&Slot]) -> Vec<Download> {
+    slots.iter().filter_map(|s| s.download.as_ref().map(|d| d.lock().unwrap().clone())).collect()
+}
+
+/// Combined progress (0–1) of running downloads, `None` if none is running.
+fn download_progress(downloads: &[Download]) -> Option<f32> {
+    download_bytes(downloads).map(|(done, total)| if total > 0 { done as f32 / total as f32 } else { 0.0 })
+}
+
+/// Bytes (done, total) of running downloads, `None` if none is running.
+fn download_bytes(downloads: &[Download]) -> Option<(u64, u64)> {
+    let (mut done, mut total, mut running) = (0, 0, false);
+    for dl in downloads {
+        if let Download::Running { done: d, total: t } = dl {
+            (done, total, running) = (done + d, total + t, true);
+        }
+    }
+    running.then_some((done, total))
+}
+
+/// Hover text of a dictionary group in the menu: its dictionaries and their state.
+fn group_tooltip(slots: &[&Slot]) -> String {
+    slots
+        .iter()
+        .map(|s| {
+            let state = match (&s.dict, &s.remote) {
+                (Some(d), _) => format!("downloaded, {} entries", d.len()),
+                (None, Some(r)) => format!("online; {} entries to download", r.meta.entries),
+                (None, None) => "online".to_owned(),
+            };
+            format!("{} – {state}", s.name)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn strip_tags(t: &str) -> &str {
     t.split(" (").next().unwrap_or(t).trim()
 }
@@ -815,10 +1069,8 @@ impl eframe::App for App {
             _ => None,
         };
         if let Some(items) = loaded {
-            let new = self.lib.apply_catalog(&items);
-            for id in new {
-                self.settings.dictionaries.push(DictSetting { id, enabled: false });
-            }
+            self.lib.apply_catalog(&items);
+            self.sync_group_settings();
             // Keep the state as Loaded but avoid re-applying every frame.
             *self.lib.catalog_state.lock().unwrap() = CatalogState::Loaded(Vec::new());
             if !items.is_empty() {
@@ -841,7 +1093,9 @@ impl eframe::App for App {
             .frame(bar_frame)
             .show(ui, |ui| self.title_bar(ui));
 
-        if let Some(msg) = self.message.lock().unwrap().clone() {
+        // Clone first: the lock must not be held while drawing (✕ locks it).
+        let msg = self.message.lock().unwrap().clone();
+        if let Some(msg) = msg {
             egui::Panel::bottom("message").show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(&msg).color(Color32::from_rgb(0xc0, 0x50, 0x20)));
@@ -851,6 +1105,8 @@ impl eframe::App for App {
                 });
             });
         }
+
+        self.download_status(ui);
 
         egui::Panel::left("words")
             .resizable(true)
@@ -868,9 +1124,10 @@ impl eframe::App for App {
 // Window chrome
 // ---------------------------------------------------------------------------
 
-fn apply_style(ctx: &egui::Context, dark: bool) {
-    ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
-    ctx.global_style_mut(|s| {
+fn apply_style(ctx: &egui::Context, theme: Theme) {
+    // `System` follows the OS light / dark setting, also when it changes.
+    ctx.set_theme(theme);
+    ctx.all_styles_mut(|s| {
         s.spacing.button_padding = vec2(8.0, 4.0);
         s.interaction.selectable_labels = true;
     });
@@ -1023,5 +1280,94 @@ fn handle_resize(ctx: &egui::Context) {
     ctx.set_cursor_icon(cursor);
     if ctx.input(|i| i.pointer.primary_pressed()) {
         ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    /// The tests set process-wide environment variables: run them one at a time.
+    static ENV: Mutex<()> = Mutex::new(());
+
+    /// Point the app at a fresh, empty home folder (never the user's own).
+    fn test_home(name: &str) -> (std::sync::MutexGuard<'static, ()>, std::path::PathBuf) {
+        let guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("csdict-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: serialized by `ENV`; no other thread reads the environment meanwhile.
+        unsafe { std::env::set_var("CSDICT_HOME", &home) };
+        (guard, home)
+    }
+
+    fn step_until(h: &mut Harness<'_, App>, what: &str, mut done: impl FnMut(&mut Harness<'_, App>) -> bool) {
+        for _ in 0..600 {
+            h.step();
+            if done(h) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    #[test]
+    fn download_status_bar() {
+        let (_env, home) = test_home("status");
+        let mut h = Harness::builder()
+            .with_size(vec2(960.0, 640.0))
+            .allow_missing_glyphs()
+            .build_eframe(|cc| App::new(cc, None));
+        h.run_steps(2);
+        assert!(h.query_by_label_contains("Downloading").is_none());
+        let state = Arc::new(Mutex::new(Download::Running { done: 5_000_000, total: 20_000_000 }));
+        h.state_mut().lib.slots.get_mut("en-wn").unwrap().download = Some(state.clone());
+        h.run_steps(2);
+        h.get_by_label("Downloading Czech ↔ English…");
+        h.get_by_label_contains("5.0 / 20.0 MB");
+        *state.lock().unwrap() = Download::Failed("x".into());
+        h.run_steps(2);
+        assert!(h.query_by_label_contains("Downloading").is_none());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Start with nothing downloaded, download Czech ↔ English from the
+    /// hint above the results, then open the D menu (this used to freeze).
+    /// Needs the locally built `dist/` (skipped if absent).
+    #[test]
+    fn download_from_hint_then_open_menu() {
+        let Some(catalog) = crate::settings::find_local_catalog() else { return };
+        let (_env, home) = test_home("download");
+        // SAFETY: serialized by `ENV` (held in `_env`).
+        unsafe { std::env::set_var("CSDICT_CATALOG", &catalog) };
+        let mut h = Harness::builder()
+            .with_size(vec2(960.0, 640.0))
+            .allow_missing_glyphs()
+            .build_eframe(|cc| App::new(cc, Some("solicit".into())));
+
+        step_until(&mut h, "the download hint", |h| h.query_by_label_contains("Download Czech ↔ English").is_some());
+        if std::env::var_os("CSDICT_TEST_ONLINE").is_some() {
+            // Let the online lookups finish first, as a user would.
+            step_until(&mut h, "online results", |h| {
+                ["cs-en", "en-cs", "en-wn"]
+                    .iter()
+                    .all(|id| matches!(h.state().online.get(id, "solicit"), Some(OnlineResult::Done(_))))
+            });
+        } else {
+            h.state_mut().settings.online = false;
+        }
+        h.get_by_label_contains("Download Czech ↔ English").click();
+        step_until(&mut h, "the downloads", |h| {
+            ["cs-en", "en-cs", "en-wn"].iter().all(|id| h.state().lib.slots[*id].is_downloaded())
+        });
+        h.run_steps(5);
+        assert!(h.query_by_label_contains("Download Czech ↔ English").is_none(), "hint still shown");
+
+        h.get_by_label("Dictionaries").click();
+        h.run_steps(5);
+        h.get_by_label_contains("Czech ↔ German");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

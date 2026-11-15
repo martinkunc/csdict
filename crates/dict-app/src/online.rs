@@ -1,11 +1,13 @@
 //! Online lookup for dictionaries that are not downloaded, using the
-//! per-word JSON pages of kaikki.org (Wiktionary data).
+//! per-word JSON pages of kaikki.org (Wiktionary data) and the en-word.net
+//! API (Open English WordNet).
 //!
 //! Requests are throttled so typing never floods the server:
 //! * the app waits [`DEBOUNCE`] after the word last changed (typing or
 //!   moving through the list) before asking;
 //! * only the word currently shown is wanted – queued lookups for words the
-//!   user has moved past are dropped before they hit the network;
+//!   user has moved past are dropped before they hit the network (lookups
+//!   of the same word in several dictionaries all stay wanted);
 //! * all HTTP requests share one [`RateLimiter`] (burst 4, then ~1.5/s,
 //!   max 2 in flight); HTTP 429/503 pause everything (Retry-After or 30 s);
 //! * results (including "not found") are cached; failures can be retried
@@ -18,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use dict_core::kaikki::{self, english_translation_groups, format_word};
+use dict_core::wordnet;
 use dict_core::normalize::nfc;
 use dict_core::{Entry, Sense};
 use serde_json::Value;
@@ -28,7 +31,7 @@ use crate::ratelimit::{Limits, RateLimiter};
 #[derive(Clone, Debug)]
 pub enum OnlineResult {
     Pending,
-    Done(Vec<Entry>),
+    Done(Arc<Vec<Entry>>),
     Failed(String),
 }
 
@@ -45,8 +48,9 @@ pub struct Online {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     limiter: Arc<RateLimiter>,
-    /// The lookup the UI currently shows; others are cancelled while queued.
-    wanted: Arc<Mutex<Option<Key>>>,
+    /// The word the UI currently shows; lookups of other words are
+    /// cancelled while queued.
+    wanted: Arc<Mutex<Option<String>>>,
 }
 
 /// Wait this long after the word last changed before going online.
@@ -105,11 +109,11 @@ impl Online {
         }
     }
 
-    /// Start a lookup unless one is cached or running. Marks it as the
-    /// wanted lookup, which cancels any other queued lookup.
+    /// Start a lookup unless one is cached or running. Marks `word` as the
+    /// wanted word, which cancels queued lookups of any other word.
     pub fn request(&mut self, dict: &str, src: &str, tgt: &str, word: &str, ctx: &egui::Context) {
         let key = (dict.to_owned(), word.to_owned());
-        *self.wanted.lock().unwrap() = Some(key.clone());
+        *self.wanted.lock().unwrap() = Some(word.to_owned());
         if self.results.contains_key(&key) {
             return;
         }
@@ -119,14 +123,15 @@ impl Online {
         self.results.insert(key.clone(), OnlineResult::Pending);
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         let (limiter, wanted) = (self.limiter.clone(), self.wanted.clone());
+        let source = if dict == WORDNET_ID { Source::WordNet } else { Source::Wiktionary };
         let (src, tgt, word) = (src.to_owned(), tgt.to_owned(), word.to_owned());
         std::thread::spawn(move || {
             let fetcher = Fetcher {
                 limiter: &limiter,
-                still_wanted: &|| wanted.lock().unwrap().as_ref() == Some(&key),
+                still_wanted: &|| wanted.lock().unwrap().as_deref() == Some(word.as_str()),
             };
-            let msg = match lookup_with(&fetcher, &src, &tgt, &word) {
-                Ok(e) => Msg::Result(key, OnlineResult::Done(e)),
+            let msg = match lookup_with(&fetcher, source, &src, &tgt, &word) {
+                Ok(e) => Msg::Result(key, OnlineResult::Done(Arc::new(e))),
                 Err(e) if e.is::<Abandoned>() => Msg::Cancelled(key),
                 Err(e) => Msg::Result(key, OnlineResult::Failed(format!("{e:#}"))),
             };
@@ -159,16 +164,30 @@ impl Fetcher<'_> {
         let Some(url) = kaikki::word_url(lang, word) else {
             anyhow::bail!("online lookup is not available for language '{lang}'");
         };
+        let text = self.get(&url)?.unwrap_or_default();
+        Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+    }
+
+    /// Ask en-word.net for the synsets of `lemma` (JSON array).
+    fn fetch_wordnet(&self, lemma: &str) -> Result<Value> {
+        match self.get(&wordnet::api_url(lemma))? {
+            Some(text) => Ok(serde_json::from_str(&text)?),
+            None => Ok(Value::Array(Vec::new())),
+        }
+    }
+
+    /// Rate-limited GET; `None` on HTTP 404.
+    fn get(&self, url: &str) -> Result<Option<String>> {
         let _permit = self.limiter.acquire(self.still_wanted).map_err(|_| Abandoned)?;
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(10)))
             .http_status_as_error(false)
             .build()
             .into();
-        let mut resp = agent.get(&url).header("User-Agent", USER_AGENT).call()?;
+        let mut resp = agent.get(url).header("User-Agent", USER_AGENT).call()?;
         match resp.status().as_u16() {
             200 => {}
-            404 => return Ok(Vec::new()),
+            404 => return Ok(None),
             s @ (429 | 503) => {
                 let wait = resp
                     .headers()
@@ -181,9 +200,23 @@ impl Fetcher<'_> {
             }
             s => anyhow::bail!("server returned HTTP {s}"),
         }
-        let text = resp.body_mut().with_config().limit(16 << 20).read_to_string()?;
-        Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+        Ok(Some(resp.body_mut().with_config().limit(16 << 20).read_to_string()?))
     }
+}
+
+/// Can entries of this pack source (as named in the catalog, e.g.
+/// `Wiktionary (via English)`, `GNU/FDL slovník`) be looked up online?
+pub fn available_online(source: &str) -> bool {
+    source.starts_with("Wiktionary") || source.contains("WordNet")
+}
+
+/// Id of the WordNet dictionary (looked up on en-word.net, not kaikki.org).
+pub const WORDNET_ID: &str = "en-wn";
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Source {
+    Wiktionary,
+    WordNet,
 }
 
 /// English glosses suitable as pivot words (`dog`, `to run` → `run`).
@@ -208,9 +241,17 @@ fn pivot_words(entries: &[Entry]) -> Vec<String> {
 }
 
 /// Look `word` up online in the `src`→`tgt` direction.
-pub fn lookup_with(f: &Fetcher<'_>, src: &str, tgt: &str, word: &str) -> Result<Vec<Entry>> {
+pub fn lookup_with(f: &Fetcher<'_>, source: Source, src: &str, tgt: &str, word: &str) -> Result<Vec<Entry>> {
     let word = nfc(word);
     let started = Instant::now();
+    if source == Source::WordNet {
+        let mut e = wordnet::entries_from_api(&word, &f.fetch_wordnet(&word)?);
+        let lower = word.to_lowercase();
+        if e.is_empty() && lower != word {
+            e = wordnet::entries_from_api(&lower, &f.fetch_wordnet(&lower)?);
+        }
+        return Ok(e);
+    }
     if tgt == "en" {
         return Ok(f.fetch_word(src, &word)?.iter().filter_map(kaikki::entry_from_kaikki).collect());
     }
@@ -263,14 +304,22 @@ mod tests {
 
     fn lookup(src: &str, tgt: &str, word: &str) -> Result<Vec<Entry>> {
         let limiter = RateLimiter::new(Limits::ONLINE);
-        lookup_with(&Fetcher { limiter: &limiter, still_wanted: &|| true }, src, tgt, word)
+        let source = if tgt == "wn" { Source::WordNet } else { Source::Wiktionary };
+        lookup_with(&Fetcher { limiter: &limiter, still_wanted: &|| true }, source, src, tgt, word)
+    }
+
+    #[test]
+    fn sources_available_online() {
+        assert!(available_online("Wiktionary") && available_online("Wiktionary (via English)"));
+        assert!(available_online("Open English WordNet"));
+        assert!(!available_online("GNU/FDL slovník"));
     }
 
     #[test]
     fn abandoned_lookup_makes_no_request() {
         let limiter = RateLimiter::new(Limits::ONLINE);
         let f = Fetcher { limiter: &limiter, still_wanted: &|| false };
-        let err = lookup_with(&f, "cs", "en", "pes").unwrap_err();
+        let err = lookup_with(&f, Source::Wiktionary, "cs", "en", "pes").unwrap_err();
         assert!(err.is::<Abandoned>());
     }
 
@@ -285,5 +334,8 @@ mod tests {
         let cs_de = lookup("cs", "de", "pes").unwrap();
         assert!(cs_de.iter().any(|e| e.senses.iter().any(|s| s.translations.iter().any(|t| t.starts_with("Hund")))), "{cs_de:#?}");
         assert!(lookup("cs", "en", "qqqxxyz").unwrap().is_empty());
+        let wn = lookup("en", "wn", "Solicit").unwrap();
+        assert!(wn.iter().any(|e| e.pos == "verb" && e.senses.iter().any(|s| s.synonyms.iter().any(|x| x == "accost"))), "{wn:#?}");
+        assert!(lookup("en", "wn", "qqqxxyz").unwrap().is_empty());
     }
 }

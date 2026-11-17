@@ -5,10 +5,9 @@
 //! whose inputs are missing are skipped):
 //!
 //! ```text
-//! raw/kaikki-cs/kaikki.org-dictionary-Czech.jsonl[.gz]
-//! raw/kaikki-de/kaikki.org-dictionary-German.jsonl[.gz]
-//! raw/kaikki-grc/kaikki.org-dictionary-AncientGreek.jsonl[.gz]
-//! raw/kaikki-en/kaikki.org-dictionary-English.jsonl[.gz]
+//! raw/kaikki-<code>/kaikki.org-dictionary-<Language>.jsonl[.gz]
+//!     (code ∈ en, cs, de, grc and the X ↔ English languages, see
+//!     `ENGLISH_PAIRS`; e.g. raw/kaikki-grc/kaikki.org-dictionary-AncientGreek.jsonl.gz)
 //! raw/slovnik/*/en-cs.txt
 //! raw/slovnik/*/de-cs.txt
 //! raw/wordnet/json/entries-a.json …   (Open English WordNet JSON release, unpacked)
@@ -194,6 +193,11 @@ fn load_kaikki_lang(path: &Path) -> Result<LangData> {
     let mut extra = ExtraMap::default();
     for_each_line(path, |line| {
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
+        // "Rōmaji / pinyin transcription of X" entries: the readings are
+        // already lookup keys of X itself.
+        if v.get("pos").and_then(Value::as_str) == Some("romanization") {
+            return;
+        }
         if let Some(e) = kaikki::entry_from_kaikki(&v) {
             extra.add(&e);
             entries.push(e);
@@ -208,21 +212,28 @@ fn load_kaikki_lang(path: &Path) -> Result<LangData> {
 }
 
 // ---------------------------------------------------------------------------
-// English dump: en→cs entries and cs↔de / cs↔grc pivots
+// English dump: en→X entries and cs↔de / cs↔grc pivots
 // ---------------------------------------------------------------------------
 
 const PIVOT_LANGS: &[&str] = &["cs", "de", "grc"];
 const PIVOT_PAIRS: &[(&str, &str)] = &[("cs", "de"), ("de", "cs"), ("cs", "grc"), ("grc", "cs")];
 
+/// Languages built as an `X ↔ English` pair (X → English from the X
+/// Wiktionary dump, English → X from the English translation tables), in
+/// addition to Czech ↔ English. Same set as the original C# csdict, plus
+/// Ancient Greek.
+pub const ENGLISH_PAIRS: &[&str] = &["de", "grc", "es", "fr", "ru", "pt", "ja", "ar", "zh", "hi", "ko"];
+
 #[derive(Default)]
 struct EnglishData {
-    en_cs: Vec<Entry>,
+    /// target language → English → target entries
+    en_to: HashMap<String, Vec<Entry>>,
     /// (src, tgt) → entries keyed by (word, pos)
     pivots: HashMap<(String, String), HashMap<(String, String), Entry>>,
     extra: ExtraMap,
 }
 
-fn load_english(path: &Path, want_extra: &HashSet<String>) -> Result<EnglishData> {
+fn load_english(path: &Path, targets: &[&str], want_extra: &HashSet<String>) -> Result<EnglishData> {
     eprintln!("reading {} (translations)", path.display());
     let mut d = EnglishData::default();
     for_each_line(path, |line| {
@@ -247,8 +258,10 @@ fn load_english(path: &Path, want_extra: &HashSet<String>) -> Result<EnglishData
         if !has_translations {
             return;
         }
-        if let Some(e) = kaikki::english_to_lang_entry(&v, "cs") {
-            d.en_cs.push(e);
+        for t in targets {
+            if let Some(e) = kaikki::english_to_lang_entry(&v, t) {
+                d.en_to.entry((*t).to_owned()).or_default().push(e);
+            }
         }
 
         let groups: HashMap<&str, Vec<kaikki::TranslationGroup>> = PIVOT_LANGS
@@ -280,7 +293,9 @@ fn load_english(path: &Path, want_extra: &HashSet<String>) -> Result<EnglishData
             }
         }
     })?;
-    eprintln!("  en→cs: {} entries", d.en_cs.len());
+    let mut counts: Vec<_> = d.en_to.iter().map(|(k, v)| format!("en→{k}: {}", v.len())).collect();
+    counts.sort();
+    eprintln!("  {}", counts.join(", "));
     for (k, v) in &d.pivots {
         eprintln!("  pivot {}→{}: {} entries", k.0, k.1, v.len());
     }
@@ -295,13 +310,7 @@ const LICENSE_WIKTIONARY: &str = "Wiktionary content, CC BY-SA 4.0 (https://en.w
 const LICENSE_SLOVNIK: &str = "Založeno na svobodném anglicko-českém slovníku, https://www.svobodneslovniky.cz/ – GNU FDL 1.1+.";
 
 fn lang_name(code: &str) -> &str {
-    match code {
-        "cs" => "Czech",
-        "en" => "English",
-        "de" => "German",
-        "grc" => "Ancient Greek",
-        other => other,
-    }
+    kaikki::language_name(code).unwrap_or(code)
 }
 
 struct PackSpec {
@@ -350,99 +359,19 @@ fn today() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-fn build_all(raw: &Path, out: &Path, base_url: &str) -> Result<()> {
-    std::fs::create_dir_all(out)?;
-    let started = Instant::now();
+/// Writes packs as they are assembled and collects the catalog.
+struct Writer<'a> {
+    out: &'a Path,
+    base_url: &'a str,
+    catalog: Vec<Value>,
+}
 
-    let en_cs_txt = find_glob(&raw.join("slovnik"), "en-cs.txt");
-    let de_cs_txt = find_glob(&raw.join("slovnik"), "de-cs.txt");
-    let en_cs_rows = en_cs_txt.as_deref().map(slovnik::parse).transpose()?.unwrap_or_default();
-    let de_cs_rows = de_cs_txt.as_deref().map(slovnik::parse).transpose()?.unwrap_or_default();
-    eprintln!("slovník: {} en-cs rows, {} de-cs rows", en_cs_rows.len(), de_cs_rows.len());
-
-    let load = |dir: &str, stem: &str| -> Result<Option<LangData>> {
-        find_input(&raw.join(dir), stem).map(|p| load_kaikki_lang(&p)).transpose()
-    };
-    let cs = load("kaikki-cs", "kaikki.org-dictionary-Czech")?;
-    let de = load("kaikki-de", "kaikki.org-dictionary-German")?;
-    let grc = load("kaikki-grc", "kaikki.org-dictionary-AncientGreek")?;
-
-    let want_en: HashSet<String> = en_cs_rows.iter().map(|r| r.left.clone()).collect();
-    let en = find_input(&raw.join("kaikki-en"), "kaikki.org-dictionary-English")
-        .map(|p| load_english(&p, &want_en))
-        .transpose()?;
-
-    let mut specs: Vec<PackSpec> = Vec::new();
-    let take_pivot = |en: &mut Option<EnglishData>, s: &str, t: &str| -> Vec<Entry> {
-        en.as_mut()
-            .and_then(|d| d.pivots.remove(&(s.to_owned(), t.to_owned())))
-            .map(|m| m.into_values().collect())
-            .unwrap_or_default()
-    };
-    let mut en = en;
-
-    // cs → en
-    let mut p = PackSpec::new("cs", "en");
-    if let Some(cs) = &cs {
-        p.add(cs.entries.iter().cloned(), "Wiktionary", LICENSE_WIKTIONARY);
-    }
-    p.add(slovnik::group(&en_cs_rows, true), "GNU/FDL slovník", LICENSE_SLOVNIK);
-    specs.push(p);
-
-    // en → cs
-    let mut p = PackSpec::new("en", "cs");
-    if let Some(en) = &mut en {
-        p.add(std::mem::take(&mut en.en_cs), "Wiktionary", LICENSE_WIKTIONARY);
-    }
-    p.add(slovnik::group(&en_cs_rows, false), "GNU/FDL slovník", LICENSE_SLOVNIK);
-    specs.push(p);
-
-    // English definitions (WordNet)
-    let mut p = PackSpec::new("en", "en");
-    if let Some(dir) = wordnet::find(&raw.join("wordnet")) {
-        p.add(wordnet::load(&dir)?, "Open English WordNet", wordnet::LICENSE);
-    }
-    p.id = Some("en-wn");
-    specs.push(p);
-
-    // de → en, grc → en
-    for (code, data) in [("de", &de), ("grc", &grc)] {
-        if let Some(d) = data {
-            let mut p = PackSpec::new(code, "en");
-            p.add(d.entries.iter().cloned(), "Wiktionary", LICENSE_WIKTIONARY);
-            specs.push(p);
-        }
-    }
-
-    // cs ↔ de, cs ↔ grc
-    let mut p = PackSpec::new("de", "cs");
-    p.add(slovnik::group(&de_cs_rows, false), "GNU/FDL slovník", LICENSE_SLOVNIK);
-    p.add(take_pivot(&mut en, "de", "cs"), "Wiktionary (via English)", LICENSE_WIKTIONARY);
-    specs.push(p);
-    let mut p = PackSpec::new("cs", "de");
-    p.add(slovnik::group(&de_cs_rows, true), "GNU/FDL slovník", LICENSE_SLOVNIK);
-    p.add(take_pivot(&mut en, "cs", "de"), "Wiktionary (via English)", LICENSE_WIKTIONARY);
-    specs.push(p);
-    let mut p = PackSpec::new("grc", "cs");
-    p.add(take_pivot(&mut en, "grc", "cs"), "Wiktionary (via English)", LICENSE_WIKTIONARY);
-    specs.push(p);
-    let mut p = PackSpec::new("cs", "grc");
-    p.add(take_pivot(&mut en, "cs", "grc"), "Wiktionary (via English)", LICENSE_WIKTIONARY);
-    specs.push(p);
-
-    let mut catalog = Vec::new();
-    for mut spec in specs {
+impl Writer<'_> {
+    fn write(&mut self, mut spec: PackSpec, extra: Option<&ExtraMap>) -> Result<()> {
         if spec.entries.is_empty() {
             eprintln!("skipping {}-{}: no input data", spec.src, spec.tgt);
-            continue;
+            return Ok(());
         }
-        let extra = match spec.src {
-            "cs" => cs.as_ref().map(|d| &d.extra),
-            "de" => de.as_ref().map(|d| &d.extra),
-            "grc" => grc.as_ref().map(|d| &d.extra),
-            "en" => en.as_ref().map(|d| &d.extra),
-            _ => None,
-        };
         if let Some(x) = extra {
             spec.entries.iter_mut().for_each(|e| x.enrich(e));
         }
@@ -467,15 +396,108 @@ fn build_all(raw: &Path, out: &Path, base_url: &str) -> Result<()> {
             b.add(e);
         }
         let file = format!("{id}.csd");
-        let path = out.join(&file);
+        let path = self.out.join(&file);
         let t = Instant::now();
         let meta = b.write(&path)?;
         let size = std::fs::metadata(&path)?.len();
         eprintln!("wrote {} – {} entries, {:.1} MB in {:?}", path.display(), meta.entries, size as f64 / 1e6, t.elapsed());
-        let url = if base_url.is_empty() { file.clone() } else { format!("{}/{file}", base_url.trim_end_matches('/')) };
-        catalog.push(serde_json::json!({ "meta": meta, "url": url, "size": size }));
+        let url = if self.base_url.is_empty() { file } else { format!("{}/{file}", self.base_url.trim_end_matches('/')) };
+        self.catalog.push(serde_json::json!({ "meta": meta, "url": url, "size": size }));
+        Ok(())
     }
-    let catalog = serde_json::json!({ "version": 1, "dictionaries": catalog });
+}
+
+fn kaikki_input(raw: &Path, code: &str) -> Option<PathBuf> {
+    find_input(&raw.join(format!("kaikki-{code}")), &kaikki::dump_stem(code)?)
+}
+
+fn build_all(raw: &Path, out: &Path, base_url: &str) -> Result<()> {
+    std::fs::create_dir_all(out)?;
+    let started = Instant::now();
+    let mut w = Writer { out, base_url, catalog: Vec::new() };
+
+    let en_cs_txt = find_glob(&raw.join("slovnik"), "en-cs.txt");
+    let de_cs_txt = find_glob(&raw.join("slovnik"), "de-cs.txt");
+    let en_cs_rows = en_cs_txt.as_deref().map(slovnik::parse).transpose()?.unwrap_or_default();
+    let de_cs_rows = de_cs_txt.as_deref().map(slovnik::parse).transpose()?.unwrap_or_default();
+    eprintln!("slovník: {} en-cs rows, {} de-cs rows", en_cs_rows.len(), de_cs_rows.len());
+
+    let load = |code: &str| -> Result<Option<LangData>> { kaikki_input(raw, code).map(|p| load_kaikki_lang(&p)).transpose() };
+
+    // English first: one pass collects every English → X direction.
+    let want_en: HashSet<String> = en_cs_rows.iter().map(|r| r.left.clone()).collect();
+    let mut targets = vec!["cs"];
+    targets.extend(ENGLISH_PAIRS);
+    let mut en = kaikki_input(raw, "en").map(|p| load_english(&p, &targets, &want_en)).transpose()?;
+    let en_to = |en: &mut Option<EnglishData>, t: &str| -> Vec<Entry> {
+        en.as_mut().and_then(|d| d.en_to.remove(t)).unwrap_or_default()
+    };
+    let take_pivot = |en: &mut Option<EnglishData>, s: &str, t: &str| -> Vec<Entry> {
+        en.as_mut()
+            .and_then(|d| d.pivots.remove(&(s.to_owned(), t.to_owned())))
+            .map(|m| m.into_values().collect())
+            .unwrap_or_default()
+    };
+
+    // Czech ↔ English (+ WordNet English definitions)
+    let cs = load("cs")?;
+    let mut p = PackSpec::new("cs", "en");
+    if let Some(cs) = &cs {
+        p.add(cs.entries.iter().cloned(), "Wiktionary", LICENSE_WIKTIONARY);
+    }
+    p.add(slovnik::group(&en_cs_rows, true), "GNU/FDL slovník", LICENSE_SLOVNIK);
+    w.write(p, cs.as_ref().map(|d| &d.extra))?;
+
+    let mut p = PackSpec::new("en", "cs");
+    p.add(en_to(&mut en, "cs"), "Wiktionary", LICENSE_WIKTIONARY);
+    p.add(slovnik::group(&en_cs_rows, false), "GNU/FDL slovník", LICENSE_SLOVNIK);
+    w.write(p, en.as_ref().map(|d| &d.extra))?;
+
+    let mut p = PackSpec::new("en", "en");
+    if let Some(dir) = wordnet::find(&raw.join("wordnet")) {
+        p.add(wordnet::load(&dir)?, "Open English WordNet", wordnet::LICENSE);
+    }
+    p.id = Some("en-wn");
+    w.write(p, en.as_ref().map(|d| &d.extra))?;
+
+    // Czech ↔ German, Czech ↔ Ancient Greek (GNU/FDL + Wiktionary via English)
+    let de = load("de")?;
+    let grc = load("grc")?;
+    let mut p = PackSpec::new("de", "cs");
+    p.add(slovnik::group(&de_cs_rows, false), "GNU/FDL slovník", LICENSE_SLOVNIK);
+    p.add(take_pivot(&mut en, "de", "cs"), "Wiktionary (via English)", LICENSE_WIKTIONARY);
+    w.write(p, de.as_ref().map(|d| &d.extra))?;
+    let mut p = PackSpec::new("cs", "de");
+    p.add(slovnik::group(&de_cs_rows, true), "GNU/FDL slovník", LICENSE_SLOVNIK);
+    p.add(take_pivot(&mut en, "cs", "de"), "Wiktionary (via English)", LICENSE_WIKTIONARY);
+    w.write(p, cs.as_ref().map(|d| &d.extra))?;
+    let mut p = PackSpec::new("grc", "cs");
+    p.add(take_pivot(&mut en, "grc", "cs"), "Wiktionary (via English)", LICENSE_WIKTIONARY);
+    w.write(p, grc.as_ref().map(|d| &d.extra))?;
+    let mut p = PackSpec::new("cs", "grc");
+    p.add(take_pivot(&mut en, "cs", "grc"), "Wiktionary (via English)", LICENSE_WIKTIONARY);
+    w.write(p, cs.as_ref().map(|d| &d.extra))?;
+    drop(cs);
+
+    // X ↔ English, one language at a time to keep memory bounded.
+    let (mut de, mut grc) = (de, grc);
+    for code in ENGLISH_PAIRS {
+        let data = match *code {
+            "de" => de.take(),
+            "grc" => grc.take(),
+            _ => load(code)?,
+        };
+        let mut p = PackSpec::new(code, "en");
+        if let Some(d) = &data {
+            p.add(d.entries.iter().cloned(), "Wiktionary", LICENSE_WIKTIONARY);
+        }
+        w.write(p, None)?;
+        let mut p = PackSpec::new("en", code);
+        p.add(en_to(&mut en, code), "Wiktionary", LICENSE_WIKTIONARY);
+        w.write(p, None)?;
+    }
+
+    let catalog = serde_json::json!({ "version": 1, "dictionaries": w.catalog });
     std::fs::write(out.join("catalog.json"), serde_json::to_vec_pretty(&catalog)?)?;
     eprintln!("done in {:?}", started.elapsed());
     Ok(())

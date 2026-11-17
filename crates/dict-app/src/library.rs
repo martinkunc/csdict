@@ -19,7 +19,27 @@ pub const BUILTIN: &[(&str, &str, &str, &str)] = &[
     ("cs-grc", "Czech → Ancient Greek", "cs", "grc"),
     ("grc-cs", "Ancient Greek → Czech", "grc", "cs"),
     ("de-en", "German → English", "de", "en"),
+    ("en-de", "English → German", "en", "de"),
     ("grc-en", "Ancient Greek → English", "grc", "en"),
+    ("en-grc", "English → Ancient Greek", "en", "grc"),
+    ("es-en", "Spanish → English", "es", "en"),
+    ("en-es", "English → Spanish", "en", "es"),
+    ("fr-en", "French → English", "fr", "en"),
+    ("en-fr", "English → French", "en", "fr"),
+    ("ru-en", "Russian → English", "ru", "en"),
+    ("en-ru", "English → Russian", "en", "ru"),
+    ("pt-en", "Portuguese → English", "pt", "en"),
+    ("en-pt", "English → Portuguese", "en", "pt"),
+    ("ja-en", "Japanese → English", "ja", "en"),
+    ("en-ja", "English → Japanese", "en", "ja"),
+    ("ar-en", "Arabic → English", "ar", "en"),
+    ("en-ar", "English → Arabic", "en", "ar"),
+    ("zh-en", "Chinese → English", "zh", "en"),
+    ("en-zh", "English → Chinese", "en", "zh"),
+    ("hi-en", "Hindi → English", "hi", "en"),
+    ("en-hi", "English → Hindi", "en", "hi"),
+    ("ko-en", "Korean → English", "ko", "en"),
+    ("en-ko", "English → Korean", "en", "ko"),
     ("en-wn", "English definitions (WordNet)", "en", "en"),
 ];
 
@@ -31,9 +51,25 @@ pub const GROUPS: &[(&str, &str, &[&str])] = &[
     ("cs-en", "Czech ↔ English", &["cs-en", "en-cs", "en-wn"]),
     ("cs-de", "Czech ↔ German", &["cs-de", "de-cs"]),
     ("cs-grc", "Czech ↔ Ancient Greek", &["cs-grc", "grc-cs"]),
-    ("de-en", "German → English", &["de-en"]),
-    ("grc-en", "Ancient Greek → English", &["grc-en"]),
+    ("de-en", "German ↔ English", &["de-en", "en-de"]),
+    ("grc-en", "Ancient Greek ↔ English", &["grc-en", "en-grc"]),
+    ("es-en", "Spanish ↔ English", &["es-en", "en-es"]),
+    ("fr-en", "French ↔ English", &["fr-en", "en-fr"]),
+    ("ru-en", "Russian ↔ English", &["ru-en", "en-ru"]),
+    ("pt-en", "Portuguese ↔ English", &["pt-en", "en-pt"]),
+    ("ja-en", "Japanese ↔ English", &["ja-en", "en-ja"]),
+    ("ar-en", "Arabic ↔ English", &["ar-en", "en-ar"]),
+    ("zh-en", "Chinese ↔ English", &["zh-en", "en-zh"]),
+    ("hi-en", "Hindi ↔ English", &["hi-en", "en-hi"]),
+    ("ko-en", "Korean ↔ English", &["ko-en", "en-ko"]),
 ];
+
+/// Group to enable on first start for a user whose system language is
+/// `lang` (two-letter code), e.g. `es` → `es-en`.
+pub fn group_for_language(lang: &str) -> Option<&'static str> {
+    let id = format!("{lang}-en");
+    GROUPS.iter().map(|g| g.0).find(|g| *g == id)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group {
@@ -81,6 +117,15 @@ pub struct Slot {
 impl Slot {
     pub fn is_downloaded(&self) -> bool {
         self.dict.is_some()
+    }
+
+    /// The catalog offers a different build than the downloaded one (the
+    /// packs are rebuilt in place, so any difference means newer).
+    pub fn update_available(&self) -> bool {
+        match (&self.dict, &self.remote) {
+            (Some(d), Some(r)) => d.meta().built != r.meta.built || d.meta().entries != r.meta.entries,
+            _ => false,
+        }
     }
 
     /// Short label of the direction, e.g. `English → Czech`, `English definitions`.
@@ -242,27 +287,33 @@ impl Library {
     }
 
     /// Open packs whose download finished; drop finished download state.
-    pub fn poll_downloads(&mut self) {
+    /// Returns whether any download finished.
+    pub fn poll_downloads(&mut self) -> bool {
         let finished: Vec<String> = self
             .slots
             .values()
             .filter(|s| matches!(s.download.as_ref().map(|d| d.lock().unwrap().clone()), Some(Download::Finished)))
             .map(|s| s.id.clone())
             .collect();
+        let any = !finished.is_empty();
         for id in finished {
             let path = self.pack_path(&id);
             if let Some(slot) = self.slots.get_mut(&id) {
                 slot.download = None;
+                // An update replaces an open pack: unmap it first (Windows
+                // cannot replace a mapped file).
+                slot.dict = None;
             }
-            match Dictionary::open(&path) {
-                Ok(d) => self.insert_dict(d),
-                Err(e) => {
-                    if let Some(slot) = self.slots.get_mut(&id) {
-                        slot.download = Some(Arc::new(Mutex::new(Download::Failed(e.to_string()))));
-                    }
-                }
+            let renamed = std::fs::rename(part_path(&path), &path).with_context(|| format!("replace {}", path.display()));
+            // Opens the new pack, or the old one again if it could not be replaced.
+            let opened = Dictionary::open(&path).map(|d| self.insert_dict(d));
+            if let Some(e) = renamed.err().or(opened.err().map(Into::into))
+                && let Some(slot) = self.slots.get_mut(&id)
+            {
+                slot.download = Some(Arc::new(Mutex::new(Download::Failed(format!("{e:#}")))));
             }
         }
+        any
     }
 
     pub fn remove(&mut self, id: &str) -> Result<()> {
@@ -310,8 +361,14 @@ fn fetch_catalog(source: &str) -> Result<Vec<CatalogItem>> {
     Ok(cat.dictionaries)
 }
 
+fn part_path(dest: &Path) -> PathBuf {
+    dest.with_extension("csd.part")
+}
+
+/// Download into `<dest>.part` and validate it; [`Library::poll_downloads`]
+/// moves it into place.
 fn download(url: &str, dest: &Path, state: &Mutex<Download>, ctx: &egui::Context) -> Result<()> {
-    let part = dest.with_extension("csd.part");
+    let part = part_path(dest);
     let mut reader: Box<dyn Read> = if url.starts_with("http://") || url.starts_with("https://") {
         let resp = ureq::get(url).header("User-Agent", USER_AGENT).call()?;
         if let Some(len) = resp.headers().get("content-length").and_then(|v| v.to_str().ok()?.parse::<u64>().ok())
@@ -345,7 +402,6 @@ fn download(url: &str, dest: &Path, state: &Mutex<Download>, ctx: &egui::Context
         let _ = std::fs::remove_file(&part);
         bail!("downloaded file is not a valid dictionary: {e}");
     }
-    std::fs::rename(&part, dest)?;
     Ok(())
 }
 
@@ -374,6 +430,23 @@ mod tests {
         let slot = &lib.slots["cs-grc"];
         assert!(slot.is_downloaded(), "download state: {:?}", slot.download.as_ref().map(|d| d.lock().unwrap().clone()));
         assert!(!slot.dict.as_ref().unwrap().entries_for("slovo").is_empty());
+        assert!(!slot.update_available());
+
+        // A rebuilt pack in the catalog is offered as an update and replaces
+        // the open one.
+        lib.slots.get_mut("cs-grc").unwrap().remote.as_mut().unwrap().meta.built = "2000-01-01".into();
+        assert!(lib.slots["cs-grc"].update_available());
+        lib.start_download("cs-grc", egui::Context::default());
+        for _ in 0..200 {
+            if lib.poll_downloads() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let slot = &lib.slots["cs-grc"];
+        assert!(slot.download.is_none(), "download state: {:?}", slot.download.as_ref().map(|d| d.lock().unwrap().clone()));
+        assert!(!slot.dict.as_ref().unwrap().entries_for("slovo").is_empty());
+        assert!(!dir.join("cs-grc.csd.part").exists());
         lib.remove("cs-grc").unwrap();
         assert!(!dir.join("cs-grc.csd").exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -384,6 +457,10 @@ mod tests {
         let lib = Library::new(std::env::temp_dir().join("csdict-test-no-such-dir"));
         let groups = lib.groups();
         assert_eq!(groups[0].members, ["cs-en", "en-cs", "en-wn"]);
+        assert_eq!(groups.len(), GROUPS.len(), "every built-in dictionary belongs to a built-in group");
+        assert_eq!(group_for_language("es"), Some("es-en"));
+        assert_eq!(group_for_language("cs"), Some("cs-en"));
+        assert_eq!(group_for_language("xx"), None);
         for id in lib.slots.keys() {
             assert_eq!(groups.iter().filter(|g| g.members.contains(id)).count(), 1, "{id}");
         }

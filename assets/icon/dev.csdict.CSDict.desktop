@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=CSDict
+Comment=A dictionary for Windows/Mac/Linux
+Exec=csdict
+Icon=dev.csdict.CSDict
+Terminal=false
+Categories=Utility;Education;Dictionary;
+StartupWMClass=dev.csdict.CSDict

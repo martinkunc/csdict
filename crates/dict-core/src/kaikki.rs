@@ -23,8 +23,20 @@ pub fn language_name(code: &str) -> Option<&'static str> {
         "it" => "Italian",
         "la" => "Latin",
         "ru" => "Russian",
+        "pt" => "Portuguese",
+        "ja" => "Japanese",
+        "ar" => "Arabic",
+        "zh" => "Chinese",
+        "hi" => "Hindi",
+        "ko" => "Korean",
         _ => return None,
     })
+}
+
+/// File name stem of the kaikki.org full dump of a language, e.g.
+/// `kaikki.org-dictionary-AncientGreek` (spaces are dropped).
+pub fn dump_stem(code: &str) -> Option<String> {
+    Some(format!("kaikki.org-dictionary-{}", language_name(code)?.replace(' ', "")))
 }
 
 /// URL of the kaikki.org per-word JSONL page for `word` in language `code`.
@@ -81,6 +93,17 @@ fn fill_sounds(v: &Value, e: &mut Entry) {
             .and_then(Value::as_str);
         if let Some(url) = url {
             push_unique(&mut e.audio, url, 3);
+        }
+    }
+    // Readings that can be typed on a Latin keyboard become lookup keys:
+    // Mandarin pinyin (`gǒu (gou³)` → `gǒu`).
+    for s in obj_list(v, "sounds") {
+        let tags: Vec<&str> = str_list(s, "tags").collect();
+        if tags.contains(&"Pinyin") && tags.contains(&"Standard")
+            && let Some(p) = s.get("zh_pron").and_then(Value::as_str)
+        {
+            let p = p.split(" (").next().unwrap_or(p);
+            push_unique(&mut e.index_forms, p, 400);
         }
     }
     if let Some(h) = obj_list(v, "hyphenations").next() {
@@ -143,8 +166,15 @@ pub fn entry_from_kaikki(v: &Value) -> Option<Entry> {
     e.etymology = etymology(v);
 
     for f in obj_list(v, "forms") {
+        // Japanese kana reading of the headword (ruby: [[kanji, kana], …]).
+        let ruby: String = obj_list(f, "ruby")
+            .filter_map(|r| r.get(1).and_then(Value::as_str))
+            .collect();
+        if !ruby.is_empty() && ruby != word {
+            push_unique(&mut e.index_forms, &ruby, 400);
+        }
         let tags: Vec<&str> = str_list(f, "tags").collect();
-        if tags.iter().any(|t| SKIP_TAGS.contains(t) && *t != "canonical") {
+        if tags.iter().any(|t| (SKIP_TAGS.contains(t) && *t != "canonical") || *t == "counter") {
             continue;
         }
         if let Some(form) = f.get("form").and_then(Value::as_str)
@@ -207,6 +237,12 @@ fn short_tags(t: &Value) -> String {
     out.join(" ")
 }
 
+/// Does a translation's language code belong to `lang`? Wiktionary files
+/// most Chinese translations under Mandarin (`cmn`, sometimes `zh`).
+fn translation_code_matches(code: &str, lang: &str) -> bool {
+    code == lang || (lang == "zh" && code == "cmn")
+}
+
 /// A group of translations of an English word sharing one sense.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranslationGroup {
@@ -225,7 +261,7 @@ pub fn english_translation_groups(v: &Value, lang: &str) -> Vec<TranslationGroup
             .get("lang_code")
             .or_else(|| t.get("code"))
             .and_then(Value::as_str);
-        if code != Some(lang) {
+        if !code.is_some_and(|c| translation_code_matches(c, lang)) {
             continue;
         }
         let Some(word) = t.get("word").and_then(Value::as_str) else { continue };
@@ -322,6 +358,33 @@ mod tests {
         assert_eq!(e.senses[0].translations, vec!["pes (m anim)"]);
         assert_eq!(e.senses[0].note.as_deref(), Some("animal"));
         assert!(english_to_lang_entry(&v, "fr").is_none());
+        let zh: Value = serde_json::from_str(
+            r#"{"word":"dog","pos":"noun","translations":[{"lang_code":"cmn","word":"狗","sense":"animal"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(english_to_lang_entry(&zh, "zh").unwrap().senses[0].translations, vec!["狗"]);
+    }
+
+    #[test]
+    fn indexes_readings() {
+        let zh: Value = serde_json::from_str(
+            r#"{"word":"狗","pos":"noun","sounds":[
+                {"zh_pron":"gǒu (gou³)","tags":["Mandarin","Standard","Pinyin"]},
+                {"zh_pron":"gau²","tags":["Cantonese","Jyutping"]}],
+                "senses":[{"glosses":["dog"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(entry_from_kaikki(&zh).unwrap().index_forms, vec!["gǒu"]);
+        let ja: Value = serde_json::from_str(
+            r#"{"word":"犬","pos":"noun","forms":[
+                {"form":"犬","ruby":[["犬","いぬ"]],"tags":["canonical"]},
+                {"form":"inu","tags":["romanization"]},
+                {"form":"匹","tags":["counter"]}],
+                "senses":[{"glosses":["dog"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(entry_from_kaikki(&ja).unwrap().index_forms, vec!["いぬ", "inu"]);
+        assert_eq!(dump_stem("grc").unwrap(), "kaikki.org-dictionary-AncientGreek");
     }
 
     #[test]

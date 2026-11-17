@@ -1,0 +1,57 @@
+name: Build dictionaries
+
+# Manual only: downloads ~1.5 GB of raw data (kaikki.org Wiktionary dumps, GNU/FDL slovník,
+# Open English WordNet) and rebuilds every .csd pack. Run it when the sources should be refreshed.
+#
+# Publishes to the rolling "dictionaries" GitHub Release, overwriting its assets in place, so the
+# app always finds the catalog at a fixed URL (settings.rs DEFAULT_CATALOG):
+#   https://github.com/<owner>/<repo>/releases/download/dictionaries/catalog.json
+# Pack URLs in the catalog are relative to it. The app offers an update when a pack's build date
+# or entry count in the catalog differs from the downloaded one.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download raw data
+        run: scripts/fetch-raw.sh data/raw
+
+      - name: Build packs
+        run: |
+          cargo build --release -p dict-build
+          target/release/dict-build all --raw data/raw --out dist
+          ls -l dist
+
+      - name: Smoke test
+        run: |
+          target/release/dict-build lookup dist/cs-en.csd pes | head -5
+          target/release/dict-build lookup dist/ja-en.csd inu | head -5
+          target/release/dict-build lookup dist/en-es.csd dog | head -5
+
+      - name: Publish to the rolling "dictionaries" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="${{ github.repository }}"
+          tag="dictionaries"
+          if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$repo" --title "Dictionaries" --latest=false \
+              --notes "Dictionary packs for CSDict, downloaded by the app on demand. Rebuilt by build-dictionaries.yml; assets are overwritten in place."
+          fi
+          # Packs first, catalog last: the catalog never points at a pack that is not there yet.
+          gh release upload "$tag" dist/*.csd --repo "$repo" --clobber
+          gh release upload "$tag" dist/catalog.json --repo "$repo" --clobber

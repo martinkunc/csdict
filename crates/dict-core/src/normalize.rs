@@ -6,13 +6,31 @@
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
-/// Fold a word into its index key: NFD, drop combining marks, lowercase,
-/// collapse whitespace, map a few special letters.
+/// Is `c` an accent that can be typed without (Latin/Greek/Cyrillic
+/// diacritics, Arabic vowel marks)? Marks that are part of the letter in
+/// other scripts – Devanagari vowel signs, the Japanese dakuten (が = か + ゙),
+/// Hangul jamo – must be kept, or unrelated words would share a key.
+fn is_optional_mark(c: char) -> bool {
+    is_combining_mark(c)
+        && matches!(c,
+            '\u{0300}'..='\u{036F}'   // combining diacritical marks
+            | '\u{0483}'..='\u{0489}' // Cyrillic
+            | '\u{064B}'..='\u{065F}' // Arabic harakat
+            | '\u{0670}'              // Arabic superscript alef
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}')
+}
+
+/// Fold a word into its index key: NFD, drop optional accents, lowercase,
+/// collapse whitespace, map a few special letters; recompose (NFC) so that
+/// e.g. Hangul syllables and kana stay single characters.
 pub fn fold(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last_space = true;
     for c in s.trim().nfd() {
-        if is_combining_mark(c) {
+        if is_optional_mark(c) {
             continue;
         }
         if c.is_whitespace() {
@@ -37,7 +55,7 @@ pub fn fold(s: &str) -> String {
     if out.ends_with(' ') {
         out.pop();
     }
-    out
+    if out.is_ascii() { out } else { out.nfc().collect() }
 }
 
 /// Canonical (NFC, trimmed) form of user input or a headword.
@@ -77,6 +95,21 @@ mod tests {
         assert_eq!(fold("Größe"), "grosse");
         assert_eq!(fold("λόγος"), "λογοσ");
         assert_eq!(fold("ἄνθρωπος"), "ανθρωποσ");
+    }
+
+    #[test]
+    fn folds_other_scripts() {
+        assert_eq!(fold("Привет"), "привет");
+        assert_eq!(fold("йод"), "иод");
+        assert_eq!(fold("كَلْب"), "كلب");
+        // Letters whose marks are not optional stay distinct.
+        assert_eq!(fold("कि"), "कि");
+        assert_ne!(fold("कि"), fold("क"));
+        assert_eq!(fold("がっこう"), "がっこう");
+        assert_ne!(fold("が"), fold("か"));
+        assert_eq!(fold("개"), "개");
+        assert_eq!(fold("狗"), "狗");
+        assert_eq!(fold("Português"), "portugues");
     }
 
     #[test]

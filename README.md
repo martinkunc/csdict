@@ -1,23 +1,40 @@
-# csdict
+# CSDict
 
 A fast, cross-platform (Windows / Linux / macOS) dictionary written in Rust
 with [egui](https://github.com/emilk/egui). Czech ↔ English (plus English
-definitions from WordNet), Czech ↔ German, Czech ↔ Ancient Greek,
-German → English, Ancient Greek → English.
+definitions from WordNet), Czech ↔ German, Czech ↔ Ancient Greek, and
+English ↔ German, Ancient Greek, Spanish, French, Russian, Portuguese,
+Japanese, Arabic, Chinese, Hindi, Korean.
+
+## Install
+
+Download the file for your system from the
+[latest release](https://github.com/martinkunc/csdict/releases/latest).
+Dictionaries are not bundled: pick and download them in the **D** menu
+(until then words are looked up online).
+
+* **Windows** – unzip, run `csdict.exe`.
+* **macOS** – open the `.dmg`, drag *CSDict* to Applications. It is not
+  notarized: on first start right-click → Open, or
+  `xattr -dr com.apple.quarantine /Applications/CSDict.app`.
+* **Linux** – unpack, run `./csdict`; `./install-desktop-icon.sh` adds a
+  menu entry with icon.
 
 * Borderless window: a large search box replaces the title bar; window buttons
   are drawn on the platform's side (left on macOS and on Linux desktops
   configured that way, right otherwise).
 * **D** menu (top-left): choose dictionaries (checkbox), set their order,
-  download / remove them, toggle online lookup, theme (same as system by
-  default, or light / dark).
+  download / remove / update them, toggle online lookup, theme (same as system by
+  default, or light / dark). On first start the dictionary of the system
+  language is selected too. Ctrl/⌘ + / − / 0 zooms (remembered).
 * Both directions of a language pair are one dictionary: *Czech ↔ English*
   looks a word up in Czech → English, English → Czech and the English
   WordNet at once. Each entry is labelled with its direction and source
   (e.g. `English → Czech · GNU/FDL`, `English definitions · WordNet`).
 * Left: matching words (exact, inflected form → lemma, prefix), then
   *similar words* (typo-tolerant). Typing without diacritics works
-  (`zlutou` → `žlutý`, `logos` → `λόγος`).
+  (`zlutou` → `žlutý`, `logos` → `λόγος`); Japanese can be typed in kana
+  or rōmaji (`inu` → 犬), Chinese in pinyin (`gou` → 狗).
 * Right: one tab per selected dictionary, in the chosen order. Parts that
   are not downloaded are looked up online (kaikki.org for Wiktionary,
   en-word.net for WordNet).
@@ -54,7 +71,7 @@ Opening a pack is O(1); a lookup (exact + prefix + Levenshtein) takes
 ## Building
 
 ```sh
-cargo run --release -p dict-app          # the app
+cargo run --release -p dict-app          # the app (binary: csdict)
 cargo run --release -p dict-app -- pes   # start with a lookup
 cargo test --workspace                   # tests (add -- --include-ignored for online tests)
 ```
@@ -66,39 +83,48 @@ or `mpv`). Windows and macOS use built-in tools (PowerShell / `afplay`, `say`).
 ## Building the dictionary packs
 
 ```sh
-mkdir -p data/raw/{kaikki-cs,kaikki-de,kaikki-grc,kaikki-en,slovnik,wordnet}
-curl -L -o data/raw/kaikki-cs/kaikki.org-dictionary-Czech.jsonl \
-  https://kaikki.org/dictionary/Czech/kaikki.org-dictionary-Czech.jsonl
-curl -L -o data/raw/kaikki-de/kaikki.org-dictionary-German.jsonl.gz \
-  https://kaikki.org/dictionary/German/kaikki.org-dictionary-German.jsonl.gz
-curl -L -o data/raw/kaikki-grc/kaikki.org-dictionary-AncientGreek.jsonl.gz \
-  "https://kaikki.org/dictionary/Ancient%20Greek/kaikki.org-dictionary-AncientGreek.jsonl.gz"
-curl -L -o data/raw/kaikki-en/kaikki.org-dictionary-English.jsonl.gz \
-  https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl.gz   # 530 MB
-mkdir -p data/raw/wordnet && (cd data/raw/wordnet && \
-  curl -L -O https://github.com/globalwordnet/english-wordnet/releases/download/2025-edition/english-wordnet-2025-json.zip && \
-  unzip -o english-wordnet-2025-json.zip -d json)
-(cd data/raw/slovnik && \
-  curl -L https://dl.cihar.com/slovnik/stardict-english-czech-latest-source.tar.gz | tar xz && \
-  curl -L https://dl.cihar.com/slovnik/stardict-german-czech-latest-source.tar.gz | tar xz)
-
-cargo run --release -p dict-build -- all --raw data/raw --out dist \
-  --base-url https://example.org/csdict      # where the packs will be hosted
+scripts/fetch-raw.sh data/raw      # ~1.5 GB: kaikki.org dumps, GNU/FDL slovník, WordNet
+cargo run --release -p dict-build -- all --raw data/raw --out dist
 ```
 
-Takes about a minute and ~2 GB RAM. Result (2026-11):
+Takes about two minutes and ~3.5 GB RAM. Result (2026-11):
 
 | pack   | entries | size    | sources |
 |--------|--------:|--------:|---------|
-| cs-en  | 149 781 | 14.4 MB | Wiktionary + GNU/FDL (reversed) |
-| en-cs  | 137 369 | 11.5 MB | Wiktionary translations + GNU/FDL |
-| en-wn  | 135 906 | 17.0 MB | Open English WordNet 2025 (definitions) |
-| de-en  | 113 264 | 27.4 MB | Wiktionary |
-| grc-en |  30 359 | 10.3 MB | Wiktionary |
-| de-cs  |  51 828 |  9.0 MB | GNU/FDL + Wiktionary via English |
-| cs-de  |  38 868 |  5.4 MB | GNU/FDL + Wiktionary via English |
-| grc-cs |   8 379 |  2.2 MB | Wiktionary via English |
-| cs-grc |   9 633 |  1.3 MB | Wiktionary via English |
+| cs-en  | 149 780 |  14.4 MB | Wiktionary + GNU/FDL |
+| en-cs  | 137 368 |  11.5 MB | Wiktionary + GNU/FDL |
+| en-wn  | 135 906 |  17.0 MB | Open English WordNet |
+| de-cs  |  51 828 |   9.0 MB | GNU/FDL + Wiktionary via English |
+| cs-de  |  38 868 |   5.4 MB | GNU/FDL + Wiktionary via English |
+| grc-cs |   8 379 |   2.2 MB | Wiktionary via English |
+| cs-grc |   9 633 |   1.3 MB | Wiktionary via English |
+| de-en  | 113 264 |  27.4 MB | Wiktionary |
+| en-de  |  73 643 |   8.9 MB | Wiktionary |
+| grc-en |  30 359 |  10.3 MB | Wiktionary |
+| en-grc |  11 575 |   1.5 MB | Wiktionary |
+| es-en  | 142 292 |  20.0 MB | Wiktionary |
+| en-es  |  68 791 |   8.2 MB | Wiktionary |
+| fr-en  | 117 953 |  16.4 MB | Wiktionary |
+| en-fr  |  78 037 |   8.8 MB | Wiktionary |
+| ru-en  |  77 393 |  18.4 MB | Wiktionary |
+| en-ru  |  64 631 |   8.5 MB | Wiktionary |
+| pt-en  |  90 343 |  13.7 MB | Wiktionary |
+| en-pt  |  58 693 |   6.9 MB | Wiktionary |
+| ja-en  | 112 111 |  19.7 MB | Wiktionary |
+| en-ja  |  39 959 |   5.0 MB | Wiktionary |
+| ar-en  |  28 726 |   7.2 MB | Wiktionary |
+| en-ar  |  24 698 |   3.3 MB | Wiktionary |
+| zh-en  | 195 061 |  28.8 MB | Wiktionary |
+| en-zh  |  53 256 |   6.6 MB | Wiktionary |
+| hi-en  |  26 507 |   6.1 MB | Wiktionary |
+| en-hi  |  20 154 |   2.6 MB | Wiktionary |
+| ko-en  |  47 361 |   8.2 MB | Wiktionary |
+| en-ko  |  27 521 |   3.4 MB | Wiktionary |
+
+X → English packs are the English Wiktionary's entries for words of
+language X; English → X packs come from the translation tables of English
+entries. Japanese can be looked up by kana and rōmaji, Chinese by pinyin
+(index keys only).
 
 "Via English" pairs come from Wiktionary translation tables: Czech and
 German/Greek translations listed under the same English sense are linked.
@@ -106,13 +132,30 @@ They are marked as such in the app.
 
 ### Hosting
 
-Upload `dist/*.csd` and `dist/catalog.json` anywhere (e.g. a GitHub
-Release) and put the catalog URL into the D menu (or set
+The app downloads packs on demand from the catalog at
+`https://github.com/martinkunc/csdict/releases/download/dictionaries/catalog.json`.
+The **Build dictionaries** workflow (`.github/workflows/build-dictionaries.yml`,
+started manually) rebuilds every pack and overwrites the assets of that
+rolling `dictionaries` release; the app then offers *Update* for packs whose
+build differs from the downloaded one.
+
+Packs can be hosted anywhere else too: upload `dist/*.csd` and
+`dist/catalog.json` and put the catalog URL into the D menu (or set
 `CSDICT_CATALOG`). A local path works too:
 
 ```sh
 CSDICT_CATALOG=$PWD/dist/catalog.json cargo run --release -p dict-app
 ```
+
+## Releases
+
+Pushing a version tag (`v1.2.0` or `1.2.0`) runs `.github/workflows/release.yml`:
+it builds Windows x64 (`.zip`, static CRT, embedded icon), Linux x64 and
+arm64 (`.tar.gz` with `.desktop` file, icons and `install-desktop-icon.sh`)
+and a universal macOS app (`.dmg`, ad-hoc signed), and attaches them to the
+GitHub Release of the tag. The packaging scripts are in `packaging/`.
+Dictionaries are not bundled. Running the workflow manually builds the
+packages as workflow artifacts without releasing.
 
 ## Environment variables
 

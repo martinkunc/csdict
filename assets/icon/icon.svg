@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4c93f0"/>
+      <stop offset="1" stop-color="#1b4a96"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="184.3" ry="184.3" fill="url(#bg)"/>
+  <!-- Open-book glyph, adapted from Feather Icons' "book-open" (MIT licensed) 24x24 path,
+       scaled 28.16x (0.66 * 1024/24) and centered on the 1024x1024 canvas. -->
+  <g transform="translate(512 512) scale(28.16) translate(-12 -12)">
+    <path fill="#ffffff" d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+    <path fill="#ffffff" d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+  </g>
+</svg>

@@ -88,6 +88,7 @@ impl App {
         let settings = dirs.load_settings();
         let lib = Library::new(dirs.dicts.clone());
         apply_style(&cc.egui_ctx, settings.theme);
+        cc.egui_ctx.set_zoom_factor(settings.zoom);
         let catalog_edit = settings.catalog.clone();
         let app = App {
             dirs,
@@ -388,65 +389,81 @@ impl App {
                 ui.set_min_width(520.0);
                 ui.label(RichText::new("Dictionaries").strong().size(16.0));
                 ui.add_space(4.0);
-                egui::Grid::new("dict_grid").num_columns(3).spacing([12.0, 6.0]).striped(true).show(ui, |ui| {
-                    let n = self.settings.dictionaries.len();
-                    let groups = self.lib.groups();
-                    for (i, d) in self.settings.dictionaries.iter().enumerate() {
-                        let Some(g) = groups.iter().find(|g| g.id == d.id) else { continue };
-                        let slots: Vec<&Slot> = g.members.iter().filter_map(|m| self.lib.slots.get(m)).collect();
-                        let mut on = d.enabled;
-                        if ui.checkbox(&mut on, &g.name).on_hover_text(group_tooltip(&slots)).changed() {
-                            actions.push(MenuAction::Toggle(i));
+                let max_list = (ui.ctx().content_rect().height() - 300.0).max(120.0);
+                egui::ScrollArea::vertical().max_height(max_list).show(ui, |ui| {
+                    egui::Grid::new("dict_grid").num_columns(3).spacing([12.0, 6.0]).striped(true).show(ui, |ui| {
+                        let n = self.settings.dictionaries.len();
+                        let groups = self.lib.groups();
+                        for (i, d) in self.settings.dictionaries.iter().enumerate() {
+                            let Some(g) = groups.iter().find(|g| g.id == d.id) else { continue };
+                            let slots: Vec<&Slot> = g.members.iter().filter_map(|m| self.lib.slots.get(m)).collect();
+                            let mut on = d.enabled;
+                            if ui.checkbox(&mut on, &g.name).on_hover_text(group_tooltip(&slots)).changed() {
+                                actions.push(MenuAction::Toggle(i));
+                            }
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 2.0;
+                                if i > 0 && icon_button(ui, Icon::Up).on_hover_text("Move up").clicked() {
+                                    actions.push(MenuAction::Move(i, -1));
+                                }
+                                if i == 0 {
+                                    ui.add_space(24.0);
+                                }
+                                if i + 1 < n && icon_button(ui, Icon::Down).on_hover_text("Move down").clicked() {
+                                    actions.push(MenuAction::Move(i, 1));
+                                }
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                let downloads = download_states(&slots);
+                                if let Some(f) = download_progress(&downloads) {
+                                    ui.add(egui::ProgressBar::new(f).desired_width(140.0).show_percentage());
+                                    return;
+                                }
+                                let have = slots.iter().filter(|s| s.is_downloaded()).count();
+                                let missing: u64 = slots
+                                    .iter()
+                                    .filter(|s| !s.is_downloaded())
+                                    .filter_map(|s| s.remote.as_ref().map(|r| r.size))
+                                    .sum();
+                                if have > 0 && ui.button("Remove").on_hover_text("Delete the downloaded dictionaries").clicked() {
+                                    actions.push(MenuAction::Remove(g.id.clone()));
+                                }
+                                if missing > 0 && ui.button(format!("⬇ Download {:.1} MB", missing as f64 / 1e6)).clicked() {
+                                    actions.push(MenuAction::Download(g.id.clone()));
+                                }
+                                let updates: u64 = slots
+                                    .iter()
+                                    .filter(|s| s.update_available())
+                                    .filter_map(|s| s.remote.as_ref().map(|r| r.size))
+                                    .sum();
+                                if updates > 0
+                                    && ui
+                                        .button(format!("⟳ Update {:.1} MB", updates as f64 / 1e6))
+                                        .on_hover_text("A newer build of this dictionary is available")
+                                        .clicked()
+                                {
+                                    actions.push(MenuAction::Download(g.id.clone()));
+                                }
+                                let failed: Vec<&str> = downloads
+                                    .iter()
+                                    .filter_map(|d| if let Download::Failed(e) = d { Some(e.as_str()) } else { None })
+                                    .collect();
+                                if !failed.is_empty() {
+                                    ui.label(RichText::new("failed").color(Color32::RED)).on_hover_text(failed.join("\n"));
+                                } else if have == slots.len() {
+                                    ui.label(RichText::new("Downloaded").color(Color32::from_rgb(0x2e, 0x9e, 0x4f)));
+                                } else if have > 0 {
+                                    ui.label(RichText::new(format!("{have}/{} downloaded", slots.len())))
+                                        .on_hover_text("The rest is looked up online");
+                                } else {
+                                    ui.label(RichText::new("online").weak()).on_hover_text(
+                                        "Not downloaded – words are looked up on kaikki.org (Wiktionary) and en-word.net (WordNet)",
+                                    );
+                                }
+                            });
+                            ui.end_row();
                         }
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            if i > 0 && icon_button(ui, Icon::Up).on_hover_text("Move up").clicked() {
-                                actions.push(MenuAction::Move(i, -1));
-                            }
-                            if i == 0 {
-                                ui.add_space(24.0);
-                            }
-                            if i + 1 < n && icon_button(ui, Icon::Down).on_hover_text("Move down").clicked() {
-                                actions.push(MenuAction::Move(i, 1));
-                            }
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let downloads = download_states(&slots);
-                            if let Some(f) = download_progress(&downloads) {
-                                ui.add(egui::ProgressBar::new(f).desired_width(140.0).show_percentage());
-                                return;
-                            }
-                            let have = slots.iter().filter(|s| s.is_downloaded()).count();
-                            let missing: u64 = slots
-                                .iter()
-                                .filter(|s| !s.is_downloaded())
-                                .filter_map(|s| s.remote.as_ref().map(|r| r.size))
-                                .sum();
-                            if have > 0 && ui.button("Remove").on_hover_text("Delete the downloaded dictionaries").clicked() {
-                                actions.push(MenuAction::Remove(g.id.clone()));
-                            }
-                            if missing > 0 && ui.button(format!("⬇ Download {:.1} MB", missing as f64 / 1e6)).clicked() {
-                                actions.push(MenuAction::Download(g.id.clone()));
-                            }
-                            let failed: Vec<&str> = downloads
-                                .iter()
-                                .filter_map(|d| if let Download::Failed(e) = d { Some(e.as_str()) } else { None })
-                                .collect();
-                            if !failed.is_empty() {
-                                ui.label(RichText::new("failed").color(Color32::RED)).on_hover_text(failed.join("\n"));
-                            } else if have == slots.len() {
-                                ui.label(RichText::new("Downloaded").color(Color32::from_rgb(0x2e, 0x9e, 0x4f)));
-                            } else if have > 0 {
-                                ui.label(RichText::new(format!("{have}/{} downloaded", slots.len())))
-                                    .on_hover_text("The rest is looked up online");
-                            } else {
-                                ui.label(RichText::new("online").weak()).on_hover_text(
-                                    "Not downloaded – words are looked up on kaikki.org (Wiktionary) and en-word.net (WordNet)",
-                                );
-                            }
-                        });
-                        ui.end_row();
-                    }
+                    });
                 });
                 ui.separator();
                 if ui.checkbox(&mut self.settings.online, "Look up online in dictionaries that are not downloaded").changed() {
@@ -778,7 +795,7 @@ impl App {
         for id in self.lib.group(gid).map(|g| g.members).unwrap_or_default() {
             let slot = &self.lib.slots[&id];
             let busy = slot.download.as_ref().is_some_and(|d| matches!(*d.lock().unwrap(), Download::Running { .. }));
-            if !slot.is_downloaded() && slot.remote.is_some() && !busy {
+            if (!slot.is_downloaded() || slot.update_available()) && slot.remote.is_some() && !busy {
                 self.lib.start_download(&id, ctx.clone());
             }
         }
@@ -1057,12 +1074,17 @@ fn entry_text(e: &Entry) -> String {
 }
 
 impl eframe::App for App {
-    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.online.poll();
-        let had = self.lib.slots.values().filter(|s| s.is_downloaded()).count();
-        self.lib.poll_downloads();
-        if self.lib.slots.values().filter(|s| s.is_downloaded()).count() != had {
+        if self.lib.poll_downloads() {
+            // New or updated packs: cached entries may be stale.
+            self.entry_cache.clear();
             self.dirty = true;
+        }
+        // Ctrl/Cmd + / − / 0 zoom is built into egui; remember it.
+        if (ctx.zoom_factor() - self.settings.zoom).abs() > 0.001 {
+            self.settings.zoom = ctx.zoom_factor();
+            self.dirs.save_settings(&self.settings);
         }
         let loaded = match &*self.lib.catalog_state.lock().unwrap() {
             CatalogState::Loaded(items) => Some(items.clone()),
@@ -1368,6 +1390,8 @@ mod tests {
         h.get_by_label("Dictionaries").click();
         h.run_steps(5);
         h.get_by_label_contains("Czech ↔ German");
+        // The last group is reachable (the list scrolls when it is long).
+        h.get_by_label_contains("Korean ↔ English");
         let _ = std::fs::remove_dir_all(&home);
     }
 }

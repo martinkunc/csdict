@@ -41,11 +41,14 @@ pub struct Settings {
     /// Look up words online in dictionaries that are not downloaded.
     pub online: bool,
     pub theme: Theme,
+    /// UI zoom (Ctrl/Cmd + / − / 0).
+    pub zoom: f32,
 }
 
-/// Default catalog location (set once the packs are hosted, e.g. on GitHub
-/// Releases); override with `CSDICT_CATALOG` or in the dictionaries menu.
-pub const DEFAULT_CATALOG: &str = "";
+/// Default catalog location: the rolling `dictionaries` GitHub Release built
+/// by `.github/workflows/build-dictionaries.yml`; override with
+/// `CSDICT_CATALOG` or in the dictionaries menu.
+pub const DEFAULT_CATALOG: &str = "https://github.com/martinkunc/csdict/releases/download/dictionaries/catalog.json";
 
 impl Default for Settings {
     fn default() -> Self {
@@ -57,6 +60,7 @@ impl Default for Settings {
             catalog: DEFAULT_CATALOG.to_owned(),
             online: true,
             theme: Theme::System,
+            zoom: 1.0,
         }
     }
 }
@@ -92,10 +96,23 @@ impl Dirs {
     }
 
     pub fn load_settings(&self) -> Settings {
-        let mut s: Settings = std::fs::read(self.settings_file())
+        let saved: Option<Settings> = std::fs::read(self.settings_file())
             .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+            .and_then(|b| serde_json::from_slice(&b).ok());
+        let first_run = saved.is_none();
+        let mut s = saved.unwrap_or_default();
+        if first_run {
+            // Also select the dictionary of the system language (e.g. Spanish
+            // ↔ English on a Spanish system), placed first.
+            let lang = sys_locale::get_locale().unwrap_or_default();
+            if let Some(id) = crate::library::group_for_language(&lang[..lang.len().min(2)].to_lowercase())
+                && let Some(i) = s.dictionaries.iter().position(|d| d.id == id)
+            {
+                let mut d = s.dictionaries.remove(i);
+                d.enabled = true;
+                s.dictionaries.insert(0, d);
+            }
+        }
         // Single directions that are now part of a group (settings from
         // before grouping) are dropped; every built-in group is listed.
         s.dictionaries.retain(|d| !crate::library::is_grouped_member(&d.id));
@@ -107,10 +124,11 @@ impl Dirs {
         if let Ok(c) = std::env::var("CSDICT_CATALOG") {
             s.catalog = c;
         }
-        if s.catalog.trim().is_empty()
-            && let Some(local) = find_local_catalog()
-        {
-            s.catalog = local;
+        if s.catalog.trim().is_empty() {
+            s.catalog = find_local_catalog().unwrap_or_else(|| DEFAULT_CATALOG.to_owned());
+        }
+        if !(0.5..=3.0).contains(&s.zoom) {
+            s.zoom = 1.0;
         }
         s
     }

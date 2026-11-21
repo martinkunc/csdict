@@ -1074,6 +1074,12 @@ fn entry_text(e: &Entry) -> String {
 }
 
 impl eframe::App for App {
+    // Only the window geometry is persisted by eframe; zoom and theme live
+    // in settings.json and must not be overridden by egui's saved memory.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.online.poll();
         if self.lib.poll_downloads() {

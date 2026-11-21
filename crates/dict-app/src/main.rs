@@ -21,6 +21,9 @@ fn main() -> eframe::Result {
             .with_decorations(false)
             .with_resizable(true)
             .with_icon(icon()),
+        // Reopen where the window was last left (size, position, monitor)
+        // instead of the OS default (centred on the active screen).
+        persist_window: true,
         #[cfg(feature = "screenshot")]
         renderer: eframe::Renderer::Glow,
         ..Default::default()

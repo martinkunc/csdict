@@ -12,7 +12,7 @@ path = "src/main.rs"
 anyhow = "1.0.104"
 dict-core = { version = "0.1.0", path = "../dict-core" }
 directories = "6.0.0"
-eframe = "0.37.0"
+eframe = { version = "0.37.0", features = ["persistence"] }
 egui = "0.37.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

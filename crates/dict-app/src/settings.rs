@@ -124,6 +124,13 @@ impl Dirs {
         if let Ok(c) = std::env::var("CSDICT_CATALOG") {
             s.catalog = c;
         }
+        // A local catalog that has since gone (e.g. a workspace that was
+        // moved or deleted) is detected anew rather than failing forever.
+        let c = s.catalog.trim();
+        let is_url = c.starts_with("http://") || c.starts_with("https://");
+        if !is_url && !std::path::Path::new(c.strip_prefix("file://").unwrap_or(c)).is_file() {
+            s.catalog.clear();
+        }
         if s.catalog.trim().is_empty() {
             s.catalog = find_local_catalog().unwrap_or_else(|| DEFAULT_CATALOG.to_owned());
         }

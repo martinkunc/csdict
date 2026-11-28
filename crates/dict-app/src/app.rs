@@ -1209,7 +1209,7 @@ fn window_buttons(ui: &mut egui::Ui, side: ButtonSide) {
             if r.clicked() {
                 match k {
                     0 => ctx.send_viewport_cmd(ViewportCommand::Close),
-                    1 => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
+                    1 => minimize(&ctx),
                     _ => ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized)),
                 }
             }
@@ -1269,12 +1269,31 @@ fn window_buttons(ui: &mut egui::Ui, side: ButtonSide) {
         });
         if r.clicked() {
             match b {
-                B::Min => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
+                B::Min => minimize(&ctx),
                 B::Max => ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized)),
                 B::Close => ctx.send_viewport_cmd(ViewportCommand::Close),
             }
         }
     }
+}
+
+/// Minimizes the window.
+///
+/// On macOS this bypasses `ViewportCommand::Minimized`: that command makes egui
+/// remember the window as minimized, and egui never re-reads that state on
+/// macOS (see egui#3494), so after the window is restored from the Dock it
+/// stays "invisible" to eframe, which then stops painting it: the app looks
+/// frozen. Minimizing the NSWindow directly leaves egui's state alone; eframe
+/// still notices through the window's occlusion events.
+fn minimize(ctx: &egui::Context) {
+    #[cfg(target_os = "macos")]
+    if let Some(mtm) = objc2::MainThreadMarker::new()
+        && let Some(window) = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow()
+    {
+        window.miniaturize(None);
+        return;
+    }
+    ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
 }
 
 /// Without OS decorations we provide our own resize borders.
